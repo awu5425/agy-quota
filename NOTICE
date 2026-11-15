@@ -1,0 +1,26 @@
+AGY Quota (agy-quota)
+Copyright 2026 AGY Quota Contributors
+
+This project is an independent native Antigravity 2.x UI sidepanel plugin
+("SIDECAR_UI_ENTRYPOINT_AUX_PANE") focused exclusively on Antigravity account
+quota monitoring.
+
+Upstream Inspiration & Attribution
+----------------------------------
+The Language Server quota RPC discovery approach, quota pool aggregation model
+(Gemini / Argon / Claude & GPT pools), credit/tier parsing logic, and gauge UI
+concepts are inspired by and adapted with gratitude from:
+
+  Antigravity Panel (https://github.com/n2ns/antigravity-panel)
+  Copyright 2024-2025 Datafrog LLC / N2NS Lab (https://n2ns.com)
+  Licensed under the Apache License, Version 2.0.
+
+Key upstream community contributions that informed the quota model include:
+- @n2ns (N2NS Lab)       - Original Antigravity Panel design and quota architecture
+- @HH-Tips               - Antigravity 2.x backend discovery, Gemini 4 Argon quota,
+                           and 5-hour / weekly bucket tracking
+- @AMDphreak             - Quota pool alignment across Gemini and Claude/GPT models
+- @chonkydonkers         - User tier available credits parsing
+- @iskisraell            - Windows process & port discovery improvements
+
+See LICENSE for the full text of the Apache License, Version 2.0.

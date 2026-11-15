@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="frame-src 'none'; child-src 'none'">
+  <title>AGY Quota</title>
+  <script src="/preload.js"></script>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div id="app" class="app">
+    <header class="topbar">
+      <div class="topbar-main">
+        <div class="brand">
+          <span id="status-dot" class="status-dot connecting" title="Connecting"></span>
+          <h1 id="title-text" class="title">AGY Quota</h1>
+        </div>
+        <div class="topbar-actions">
+          <span id="updated-at" class="updated-at" title="Last updated">--:--</span>
+          <button id="btn-refresh" type="button" class="icon-btn" title="Refresh quota" aria-label="Refresh">
+            <svg class="icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M13.5 8a5.5 5.5 0 1 1-1.45-3.72"/>
+              <path d="M13.5 2.75v2.75h-2.75"/>
+            </svg>
+          </button>
+          <button id="btn-lang" type="button" class="pill-toggle" title="Switch language">中/EN</button>
+        </div>
+      </div>
+      <div class="controls-row">
+        <div class="segmented" role="group" aria-label="View mode">
+          <button type="button" class="seg-btn active" data-view="pools" id="seg-pools">Pools</button>
+          <button type="button" class="seg-btn" data-view="models" id="seg-models">Models</button>
+        </div>
+        <div class="segmented" role="group" aria-label="Gauge style">
+          <button type="button" class="seg-btn active" data-gauge="semi-arc" id="seg-arc">Arc</button>
+          <button type="button" class="seg-btn" data-gauge="classic-donut" id="seg-donut">Ring</button>
+        </div>
+      </div>
+    </header>
+
+    <div id="error-banner" class="banner error hidden" role="alert">
+      <div class="banner-body">
+        <strong id="error-title">Connection failed</strong>
+        <p id="error-msg"></p>
+      </div>
+      <button id="btn-retry" type="button" class="retry-btn">Retry</button>
+    </div>
+
+    <main id="content" class="content">
+      <div id="loading-state" class="loading-box">
+        <div class="skel-grid">
+          <div class="skel-card"></div>
+          <div class="skel-card"></div>
+          <div class="skel-card"></div>
+        </div>
+        <p id="loading-text" class="muted-note">Fetching Antigravity quota...</p>
+      </div>
+
+      <section id="user-card" class="card user-card hidden"></section>
+      <section id="gauges-section" class="gauges-grid hidden"></section>
+      <section id="summary-section" class="card section-card hidden"></section>
+      <section id="trend-section" class="card section-card hidden"></section>
+      <section id="models-section" class="card section-card hidden"></section>
+      <section id="credits-section" class="card section-card hidden"></section>
+    </main>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

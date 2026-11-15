@@ -1,0 +1,6 @@
+{
+  "name": "quota_panel",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "AGY Quota sidecar UI panel for Antigravity 2.x"
+}

@@ -1,0 +1,11 @@
+{
+  "name": "agy-quota",
+  "displayName": "AGY Quota",
+  "version": "1.0.0",
+  "description": "Real-time Antigravity account quota, weekly limits, subscription credits, and per-model reset monitor in the auxiliary side panel.",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "Show my current Antigravity account quota and reset times",
+    "Check remaining Gemini, Argon, and Claude/GPT quota pools"
+  ]
+}
