@@ -3,6 +3,8 @@
   "displayName": "AGY Quota",
   "version": "1.0.0",
   "description": "Real-time Antigravity account quota, weekly limits, subscription credits, and per-model reset monitor in the auxiliary side panel.",
+  "homepage": "https://github.com/awu5425/agy-quota",
+  "repository": "https://github.com/awu5425/agy-quota",
   "logo": "assets/logo.svg",
   "suggestedPrompts": [
     "Show my current Antigravity account quota and reset times",

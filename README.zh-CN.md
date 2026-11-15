@@ -2,7 +2,7 @@
 
 [English](./README.md) | 简体中文
 
-一个轻量级的 **Antigravity 2.x 原生侧边栏插件**（`SIDECAR_UI_ENTRYPOINT_AUX_PANE`），用于直接在客户端右侧辅助面板查看 Antigravity 账号配额池、5 小时 / 周限额、订阅 Credits 与各模型重置倒计时。
+一个轻量级的 **Antigravity 2.x 原生侧边栏插件**（`SIDECAR_UI_ENTRYPOINT_AUX_PANE`）与 **终端 CLI 工具**，用于在客户端右侧辅助面板或命令行直接查看 Antigravity 账号配额池、5 小时 / 周限额、订阅 Credits 与各模型重置倒计时。
 
 > 本插件**只聚焦账号额度与重置状态查看**，刻意**不包含** Token 热力图、Token 监控与上下文查看功能。
 
@@ -14,29 +14,32 @@
 
 而 **Antigravity 2.x** 是独立构建的 Electron 桌面客户端，已经移除 VS Code Extension Host，不支持 `.vsix` 安装；取而代之的是内置的 **UI Sidecar Plugin** 原生插件体系，直接扫描 `~/.gemini/config/plugins/<name>/` 并挂载到右侧辅助面板：
 
-| 方案 | 是否依赖 VS Code 扩展宿主 | 是否需要修改 `app.asar` | 主题与侧边栏集成 |
+| 方案 | 是否依赖 VS Code 扩展宿主 | 是否需要修改 `app.asar` | 主题、侧边栏与 CLI 能力 |
 | :--- | :--- | :--- | :--- |
 | 传统 `.vsix` (`antigravity-panel`) | 是（仅支持 VS Code / AGY 1.x） | 否 | 无法安装到 Antigravity 2.x |
 | 客户端注入 / 补丁方案 | 否 | 是（客户端升级易失效） | 强耦合桌面端打包文件 |
-| **AGY Quota (`agy-quota` Sidecar)** | **否（Antigravity 2.x 原生）** | **否** | **原生 `SIDECAR_UI_ENTRYPOINT_AUX_PANE` + `/preload.js`** |
+| **AGY Quota (`agy-quota` Sidecar + CLI)** | **否（Antigravity 2.x 原生）** | **否** | **原生 `SIDECAR_UI_ENTRYPOINT_AUX_PANE` + `/preload.js` + 终端 CLI** |
 
 想深入了解插件发现机制、RPC 接口与配额池聚合策略，请阅读：[架构说明 (docs/ARCHITECTURE.md)](./docs/ARCHITECTURE.md)。
 
 ---
 
-## 功能特性
+## 功能特性与跨平台支持
 
-- **账号与订阅信息**：显示当前登录账号邮箱（支持一键点击打码隐藏隐私）及订阅方案（如 `Google AI Pro`）。
-- **配额池视图 (`Pools`)**：
+- **跨平台适配（Windows / macOS / Linux）**：
+  - **客户端侧边栏模式**：安装路径统一基于 `os.homedir()`（`~/.gemini/config/plugins/agy-quota`），直接读取宿主注入的 `ANTIGRAVITY_LS_ADDRESS`、`ANTIGRAVITY_CSRF_TOKEN` 与 `sidecar_sdk`，三端行为完全一致。
+  - **终端 CLI / 独立预览进程发现**：会自动探测本机运行中的 Antigravity Language Server —— Windows 使用 `Get-CimInstance` + `netstat`（已实测通过），macOS 使用 `ps` + `lsof`，Linux 使用 `ps` + `ss`。*（macOS/Linux 分支按标准系统命令实现，当前仅在 Windows 实机验证。）*
+- **账号与订阅信息**：显示当前登录账号邮箱（UI 支持一键打码隐藏，CLI 支持 `--mask`）及订阅方案（如 `Google AI Pro`）。
+- **配额池视图 (`Pools` 与终端 CLI)**：
   - 按真实配额策略聚合为 `Gemini`、`Argon`、`Claude / GPT` 配额池
-  - 支持 **半圆弧 (`Arc`)** 与 **圆环 (`Ring`)** 两种 SVG 仪表盘样式
+  - 侧边栏支持 **半圆弧 (`Arc`)** 与 **圆环 (`Ring`)** 两种 SVG 仪表盘样式
   - 联动解析 `RetrieveUserQuotaSummary` 中的 **5 小时限额 (`5h`)** 与 **周限额 (`Weekly`)**
   - 实时显示下次重置倒计时与本地重置时间
   - 仅在本地记录轻量化 7 天剩余额度快照，用于估算近期消耗速率（`%/h`）、预计续航（Runway）及 90 分钟趋势柱图（不抓取任何对话上下文或 Token 日志）
-- **单模型明细视图 (`Models`)**：
+- **单模型明细 (`Models` 视图与 `--models` 参数)**：
   - 展示每个模型的剩余比例进度条与重置倒计时
-  - 支持折叠/展开查看当前不可用或已禁用的模型
-- **Credits 详情**：可折叠展示 Prompt Credits、Flow Credits 及账号附加额度信息（如 `GOOGLE_ONE_AI`）
+  - 支持查看当前不可用或已禁用的模型
+- **Credits 详情**：展示 Prompt Credits、Flow Credits 及账号附加额度信息（如 `GOOGLE_ONE_AI`）
 - **双语切换与宿主主题同步**：支持一键切换 `中文 / EN`（持久化保存在 `localStorage`），并通过 `/preload.js` 自动同步 Antigravity 明/暗主题变量
 
 ---
@@ -44,7 +47,9 @@
 ## 项目结构
 
 ```text
-agy-sidepanel/
+agy-quota/
+├── package.json                     # 包配置与全局命令入口 ("bin": { "agy-quota": "./cli.mjs" })
+├── cli.mjs                          # 统一 CLI 入口（终端面板、--json、--standalone、--install）
 ├── plugin.json                      # Antigravity 2.x 插件清单
 ├── install.mjs                      # 安装 / 卸载脚本（同步至 ~/.gemini/config/plugins/agy-quota）
 ├── README.md                        # English README
@@ -59,7 +64,7 @@ agy-sidepanel/
     └── quota_panel/
         ├── package.json             # ESM 模块标记 ("type": "module")
         ├── sidecar.json             # 注册 SIDECAR_UI_ENTRYPOINT_AUX_PANE ("Quota")
-        ├── main.mjs                 # SidecarApp 后端、LS RPC 客户端、配额池聚合与 --dump/--standalone
+        ├── main.mjs                 # SidecarApp 后端、LS RPC 客户端、配额池聚合与 --cli/--dump/--standalone
         ├── index.html               # 侧边栏 HTML 入口
         ├── styles.css               # 自适应宿主主题 CSS 样式
         └── app.js                   # 前端视图状态、SVG 仪表、倒计时与交互逻辑
@@ -74,13 +79,13 @@ agy-sidepanel/
 - **Antigravity 2.x** 桌面客户端
 - **Node.js**（支持原生 ESM，建议 v18+）
 
-### 安装步骤
+### 安装侧边栏插件
 
 克隆仓库并运行安装脚本，将插件复制到 Antigravity 2.x 原生插件目录（`~/.gemini/config/plugins/agy-quota`）：
 
 ```bash
-git clone https://github.com/awu5425/agy-sidepanel.git
-cd agy-sidepanel
+git clone https://github.com/awu5425/agy-quota.git
+cd agy-quota
 node install.mjs
 ```
 
@@ -94,18 +99,42 @@ node install.mjs --uninstall
 
 ---
 
-## 命令行调试与独立预览
+## 终端 CLI 与独立网页预览
 
-通过命令行一次性输出当前 Antigravity 账号的实时配额 JSON：
+### 仓库内直接运行
 
 ```bash
-node sidecars/quota_panel/main.mjs --dump
+# 在终端展示彩色配额池进度条、5h/周限额摘要与 Credits（默认 CLI 模式）
+node cli.mjs
+
+# 附带展示全部单模型配额明细及已禁用模型
+node cli.mjs --models
+
+# 隐藏账号邮箱（例如 bi***@gmail.com）
+node cli.mjs --mask
+
+# 关闭 ANSI 彩色输出（也支持环境变量 NO_COLOR=1）
+node cli.mjs --no-color
+
+# 输出完整 JSON 诊断快照（等价于 --dump）
+node cli.mjs --json
+
+# 启动独立本地 Web 服务，在浏览器预览面板
+node cli.mjs --standalone --port 4318
+
+# 通过 CLI 安装 / 卸载侧边栏插件
+node cli.mjs --install
+node cli.mjs --uninstall
 ```
 
-以独立本地 HTTP 服务启动，方便直接在浏览器中预览与调试界面：
+### 挂载为全局 `agy-quota` 命令（可选）
+
+在仓库根目录执行 `npm link` 后，即可在任意终端目录直接使用 `agy-quota`：
 
 ```bash
-node sidecars/quota_panel/main.mjs --standalone --port 4318
+npm link
+agy-quota
+agy-quota --models --mask
 ```
 
 ---

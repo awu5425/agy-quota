@@ -891,6 +891,166 @@ async function runDumpMode() {
   console.log(JSON.stringify(snap, null, 2));
 }
 
+function maskEmailAddress(email) {
+  if (!email || !email.includes('@')) return email || '-';
+  const [local, domain] = email.split('@');
+  if (local.length <= 2) return `${local[0] || ''}***@${domain}`;
+  return `${local.slice(0, 2)}***@${domain}`;
+}
+
+function renderProgressBar(pct, width = 20) {
+  const safe = Number.isFinite(pct) ? clamp(pct, 0, 100) : 0;
+  const filled = Math.round((safe / 100) * width);
+  return `${'█'.repeat(filled)}${'░'.repeat(Math.max(0, width - filled))}`;
+}
+
+function createAnsiHelpers(enabled) {
+  const wrap = (code) => (text) => (enabled ? `\x1b[${code}m${text}\x1b[0m` : String(text));
+  return {
+    bold: wrap('1'),
+    dim: wrap('2'),
+    cyan: wrap('36'),
+    green: wrap('32'),
+    yellow: wrap('33'),
+    red: wrap('31'),
+    byPct(pct, text) {
+      const safe = Number(pct);
+      if (!Number.isFinite(safe)) return wrap('2')(text);
+      if (safe >= 60) return wrap('32')(text);
+      if (safe >= 20) return wrap('33')(text);
+      return wrap('31')(text);
+    },
+  };
+}
+
+function formatPctLabel(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '  N/A ';
+  const rounded = Number.isInteger(num) ? String(num) : num.toFixed(1).replace(/\.0$/, '');
+  return `${rounded}%`.padStart(6);
+}
+
+const CLI_HELP_TEXT = `AGY Quota Sidecar & CLI
+
+Usage:
+  node main.mjs --cli [options]       Render colored quota dashboard in terminal
+  node main.mjs --dump                Print full quota snapshot as JSON
+  node main.mjs --json                Alias for --dump
+  node main.mjs --standalone [--port <n>]
+                                      Start standalone local Web UI server
+  node main.mjs --help, -h            Show this help message
+
+CLI Options:
+  --models, -m    Include per-model quota breakdown and disabled models
+  --mask          Mask account email (e.g. bi***@gmail.com)
+  --no-color      Disable ANSI terminal colors (also honors NO_COLOR)`;
+
+async function runCliMode(args) {
+  const useColor = !args.includes('--no-color') && !process.env.NO_COLOR;
+  const maskEmail = args.includes('--mask');
+  const showModels = args.includes('--models') || args.includes('-m');
+  const c = createAnsiHelpers(useColor);
+
+  const snap = await fetchQuotaSnapshot(true);
+  const { userInfo, connection, pools, summaryGroups, credits, models, disabledModels } = snap;
+  const displayEmail = maskEmail ? maskEmailAddress(userInfo?.email) : (userInfo?.email || '-');
+  const tierLabel = userInfo?.tier || userInfo?.planName || 'Unknown';
+
+  const lines = [];
+  lines.push(`${c.bold(c.cyan('AGY Quota'))} ${c.dim(`· ${new Date(snap.timestamp).toLocaleString()}`)}`);
+  lines.push(
+    `${c.dim('Account:')} ${c.bold(displayEmail)} ${c.dim(`(${tierLabel})`)}  ` +
+    `${c.dim('LS:')} ${connection?.host || '-'}:${connection?.port || '-'} ${c.dim(`[${connection?.source || '-'}]`)}`,
+  );
+  lines.push('');
+
+  lines.push(c.bold(c.cyan('Quota Pools')));
+  const visiblePools = (pools || []).filter((p) => p.hasData);
+  if (visiblePools.length === 0) {
+    lines.push(c.dim('  No pool quota data reported.'));
+  } else {
+    for (const pool of visiblePools) {
+      const label = String(pool.label || pool.id).padEnd(14);
+      const bar = c.byPct(pool.remaining, renderProgressBar(pool.remaining));
+      const pct = c.byPct(pool.remaining, formatPctLabel(pool.remaining));
+      const resetPart = `reset ${pool.resetTime || '-'}`;
+      const weeklyPart = pool.weekly
+        ? ` | weekly ${pool.weekly.remaining}% (${pool.weekly.resetTime || '-'})`
+        : '';
+      const predPart = pool.prediction?.usageRate > 0
+        ? ` | ${pool.prediction.usageRate}%/h (${pool.prediction.runway})`
+        : '';
+      lines.push(`  ${label} [${bar}] ${pct}  ${c.dim(`${resetPart}${weeklyPart}${predPart}`)}`);
+    }
+  }
+  lines.push('');
+
+  if (Array.isArray(summaryGroups) && summaryGroups.length > 0) {
+    lines.push(c.bold(c.cyan('Quota Windows (Summary)')));
+    for (const group of summaryGroups) {
+      lines.push(`  ${c.bold(group.displayName || 'Group')}`);
+      for (const bucket of group.buckets || []) {
+        const winLabel = String(bucket.window || bucket.bucketId || '-').padEnd(12);
+        const bar = c.byPct(bucket.remainingPercentage, renderProgressBar(bucket.remainingPercentage));
+        const pct = c.byPct(bucket.remainingPercentage, formatPctLabel(bucket.remainingPercentage));
+        lines.push(`    ${winLabel} [${bar}] ${pct}  ${c.dim(`reset ${bucket.timeUntilReset || '-'}`)}`);
+      }
+    }
+    lines.push('');
+  }
+
+  const hasPrompt = Boolean(credits?.prompt);
+  const hasFlow = Boolean(credits?.flow);
+  const hasUserCredits = Array.isArray(credits?.userCredits) && credits.userCredits.length > 0;
+  if (hasPrompt || hasFlow || hasUserCredits) {
+    lines.push(c.bold(c.cyan('Credits')));
+    if (hasPrompt) {
+      const p = credits.prompt;
+      lines.push(
+        `  ${'Prompt'.padEnd(14)} [${c.byPct(p.remainingPercentage, renderProgressBar(p.remainingPercentage))}] ` +
+        `${c.byPct(p.remainingPercentage, formatPctLabel(p.remainingPercentage))}  ` +
+        `${c.dim(`${p.available} / ${p.monthly}`)}`,
+      );
+    }
+    if (hasFlow) {
+      const f = credits.flow;
+      lines.push(
+        `  ${'Flow'.padEnd(14)} [${c.byPct(f.remainingPercentage, renderProgressBar(f.remainingPercentage))}] ` +
+        `${c.byPct(f.remainingPercentage, formatPctLabel(f.remainingPercentage))}  ` +
+        `${c.dim(`${f.available} / ${f.monthly}`)}`,
+      );
+    }
+    if (hasUserCredits) {
+      for (const uc of credits.userCredits) {
+        const val = uc.creditAmount != null
+          ? `${uc.creditAmount}`
+          : (uc.minimumCreditAmountForUsage != null ? `min ${uc.minimumCreditAmountForUsage}` : '-');
+        lines.push(`  ${String(uc.creditType || 'Credit').padEnd(14)} ${c.dim(val)}`);
+      }
+    }
+    lines.push('');
+  }
+
+  if (showModels) {
+    lines.push(c.bold(c.cyan(`Models (${models?.length || 0})`)));
+    for (const model of models || []) {
+      const name = String(model.label || model.modelId).slice(0, 28).padEnd(29);
+      const bar = c.byPct(model.remainingPercentage, renderProgressBar(model.remainingPercentage));
+      const pct = c.byPct(model.remainingPercentage, formatPctLabel(model.remainingPercentage));
+      const suffix = model.isExhausted ? 'EXHAUSTED' : `reset ${model.timeUntilReset || '-'}`;
+      lines.push(`  ${name} [${bar}] ${pct}  ${c.dim(`${model.groupLabel || ''} · ${suffix}`)}`);
+    }
+    if (Array.isArray(disabledModels) && disabledModels.length > 0) {
+      lines.push('');
+      lines.push(c.dim(`Disabled Models (${disabledModels.length}): ${disabledModels.map((m) => m.label).join(', ')}`));
+    }
+  } else {
+    lines.push(c.dim('Tip: pass --models (-m) to view per-model quota breakdown.'));
+  }
+
+  console.log(lines.join('\n'));
+}
+
 async function runStandaloneServer(port = 0) {
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url || '/', 'http://127.0.0.1');
@@ -959,9 +1119,16 @@ async function runSidecarMode() {
 }
 
 const args = process.argv.slice(2);
-if (args.includes('--dump')) {
+if (args.includes('--help') || args.includes('-h')) {
+  console.log(CLI_HELP_TEXT);
+} else if (args.includes('--dump') || args.includes('--json')) {
   runDumpMode().catch((err) => {
     console.error(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }, null, 2));
+    process.exitCode = 1;
+  });
+} else if (args.includes('--cli')) {
+  runCliMode(args).catch((err) => {
+    console.error(`[agy-quota] ${err instanceof Error ? err.message : String(err)}`);
     process.exitCode = 1;
   });
 } else if (args.includes('--standalone') || !process.env.ANTIGRAVITY_SIDECAR_WEB_PORT) {

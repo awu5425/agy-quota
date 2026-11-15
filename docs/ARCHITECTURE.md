@@ -35,7 +35,7 @@ Antigravity 2.x 启动并连接到本地 Language Server 后，会自动扫描 `
     └── quota_panel/
         ├── package.json             # 标记 { "type": "module" }
         ├── sidecar.json             # Sidecar 运行配置与右侧栏入口声明
-        ├── main.mjs                 # Node ESM 后端（SidecarApp / Standalone / Dump 三模式）
+        ├── main.mjs                 # Node ESM 后端（SidecarApp / CLI / Standalone / Dump 四模式）
         ├── index.html               # 侧边栏 Web UI 壳
         ├── styles.css               # 跟随宿主主题变量的样式表
         └── app.js                   # 前端视图状态、SVG 仪表盘与倒计时渲染
@@ -60,7 +60,7 @@ Antigravity 2.x 启动并连接到本地 Language Server 后，会自动扫描 `
 | `ANTIGRAVITY_SIDECAR_UI_TOKEN` | 宿主与 Sidecar 通信的鉴权 Token |
 | `ANTIGRAVITY_EXECUTABLE_DATA_DIR` | 应用数据目录（`quota_panel` 用于存放本地 7 天轻量化配额快照） |
 
-在独立调试模式（`--standalone` / `--dump`）下，如果环境变量不存在，`sidecars/quota_panel/main.mjs` 也会尝试从本机 Antigravity Language Server 进程参数中自动探测地址与 `csrf_token`。
+在终端 CLI 与独立调试模式（`cli.mjs` / `--cli` / `--standalone` / `--dump`）下，如果环境变量不存在，`sidecars/quota_panel/main.mjs` 也会按操作系统自动探测本机运行中的 Antigravity Language Server 进程参数与监听端口（Windows 使用 `Get-CimInstance` + `netstat`，macOS 使用 `ps` + `lsof`，Linux 使用 `ps` + `ss`），提取地址与 `csrf_token`。
 
 前端方面，`sidecar_sdk` 提供的 `/preload.js` 会完成两件事：
 

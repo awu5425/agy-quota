@@ -1,0 +1,24 @@
+{
+  "name": "agy-quota",
+  "version": "1.0.0",
+  "description": "Lightweight native Antigravity 2.x sidepanel plugin and CLI for monitoring account quota pools, 5h/weekly limits, tier credits, and model reset timers.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "bin": {
+    "agy-quota": "./cli.mjs"
+  },
+  "scripts": {
+    "start": "node cli.mjs",
+    "cli": "node cli.mjs",
+    "models": "node cli.mjs --models",
+    "dump": "node cli.mjs --json",
+    "standalone": "node cli.mjs --standalone --port 4318",
+    "install-plugin": "node install.mjs",
+    "uninstall-plugin": "node install.mjs --uninstall"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/awu5425/agy-quota.git"
+  },
+  "homepage": "https://github.com/awu5425/agy-quota"
+}

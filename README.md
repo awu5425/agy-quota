@@ -2,7 +2,7 @@
 
 English | [简体中文](./README.zh-CN.md)
 
-A lightweight native **Antigravity 2.x sidepanel plugin** (`SIDECAR_UI_ENTRYPOINT_AUX_PANE`) for monitoring Antigravity account quota pools, 5-hour / weekly limits, tier credits, and per-model reset countdowns — **focused purely on quota visibility**, with **no token heatmaps, no token monitoring, and no conversation context viewer**.
+A lightweight native **Antigravity 2.x sidepanel plugin** (`SIDECAR_UI_ENTRYPOINT_AUX_PANE`) and **terminal CLI** for monitoring Antigravity account quota pools, 5-hour / weekly limits, tier credits, and per-model reset countdowns — **focused purely on quota visibility**, with **no token heatmaps, no token monitoring, and no conversation context viewer**.
 
 ---
 
@@ -16,25 +16,28 @@ Legacy VS Code extensions such as `antigravity-panel` (`"engines": { "vscode": "
 | :--- | :--- | :--- | :--- |
 | Legacy `.vsix` (`antigravity-panel`) | Yes (VS Code / AGY 1.x only) | No | Fails on Antigravity 2.x |
 | Client ASAR Patching | No | Yes (breaks on updates) | Coupled to app bundle |
-| **AGY Quota (`agy-quota` Sidecar)** | **No (Native AGY 2.x)** | **No** | **Native `SIDECAR_UI_ENTRYPOINT_AUX_PANE` + `/preload.js`** |
+| **AGY Quota (`agy-quota` Sidecar + CLI)** | **No (Native AGY 2.x)** | **No** | **Native `SIDECAR_UI_ENTRYPOINT_AUX_PANE` + `/preload.js` + Terminal CLI** |
 
 For technical details on plugin discovery, RPC endpoints, and pool aggregation, see [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
 
 ---
 
-## Features
+## Features & Platform Support
 
-- **Account & Tier Summary**: Displays account name/email (with one-click privacy masking) and subscription tier (e.g., `Google AI Pro`).
-- **Quota Pools (`Pools` view)**:
+- **Cross-Platform Design (Windows, macOS, Linux)**:
+  - **In Antigravity Side Pane**: Uses `os.homedir()` (`~/.gemini/config/plugins/agy-quota`), host-injected `ANTIGRAVITY_LS_ADDRESS` & `ANTIGRAVITY_CSRF_TOKEN`, and `sidecar_sdk` identically across Windows, macOS, and Linux.
+  - **Standalone / CLI Process Discovery**: Automatically detects running Language Server processes via `Get-CimInstance` + `netstat` (Windows, verified), `ps` + `lsof` (macOS), and `ps` + `ss` (Linux). *(Verified on Windows Antigravity 2.x; macOS/Linux discovery branches follow standard OS tooling.)*
+- **Account & Tier Summary**: Displays account name/email (with one-click privacy masking / `--mask`) and subscription tier (e.g., `Google AI Pro`).
+- **Quota Pools (`Pools` view & CLI)**:
   - Aggregates models into native quota pools (`Gemini`, `Argon`, `Claude / GPT`)
-  - Switchable **Semi-Arc** and **Ring** SVG gauges
+  - Switchable **Semi-Arc** and **Ring** SVG gauges in the side panel
   - Shows **5h** and **Weekly** windows parsed from `RetrieveUserQuotaSummary`
   - Live reset countdowns and local reset timestamps
   - Lightweight local 7-day quota snapshots for burn rate (`%/h`), runway estimation, and 90-minute bucket trends (no token or prompt logging)
-- **Per-Model Breakdown (`Models` view)**:
+- **Per-Model Breakdown (`Models` view & `--models` CLI flag)**:
   - Remaining percentage bar and reset timer per model
   - Collapsible unavailable / disabled models section
-- **Tier Credits Breakdown**: Collapsible section displaying Prompt Credits, Flow Credits, and plan credit metadata (`GOOGLE_ONE_AI`, etc.) when present
+- **Tier Credits Breakdown**: Displays Prompt Credits, Flow Credits, and plan credit metadata (`GOOGLE_ONE_AI`, etc.) when present
 - **Bilingual UI & Host Theme Sync**: Instant `中文` / `EN` toggle persisted in `localStorage`, plus automatic light/dark theme synchronization via Antigravity `/preload.js`
 
 ---
@@ -42,7 +45,9 @@ For technical details on plugin discovery, RPC endpoints, and pool aggregation, 
 ## Project Structure
 
 ```text
-agy-sidepanel/
+agy-quota/
+├── package.json                     # Package metadata & "bin": { "agy-quota": "./cli.mjs" }
+├── cli.mjs                          # Unified CLI entrypoint (terminal view, --json, --standalone, --install)
 ├── plugin.json                      # Antigravity 2.x plugin manifest
 ├── install.mjs                      # Installer / uninstaller (~/.gemini/config/plugins/agy-quota)
 ├── README.md                        # English documentation
@@ -57,7 +62,7 @@ agy-sidepanel/
     └── quota_panel/
         ├── package.json             # ESM marker ("type": "module")
         ├── sidecar.json             # Registers SIDECAR_UI_ENTRYPOINT_AUX_PANE ("Quota")
-        ├── main.mjs                 # SidecarApp server, LS RPC client, pool aggregator, --dump/--standalone
+        ├── main.mjs                 # SidecarApp server, LS RPC client, pool aggregator, --cli/--dump/--standalone
         ├── index.html               # Sidepanel HTML shell
         ├── styles.css               # Host-theme-reactive CSS
         └── app.js                   # Frontend state, gauges, countdowns, and controls
@@ -65,26 +70,26 @@ agy-sidepanel/
 
 ---
 
-## Quick Start / Installation
+## Quick Start & Installation
 
 ### Prerequisites
 
 - **Antigravity 2.x** desktop client
 - **Node.js** (v18+ ESM support)
 
-### Install
+### Install the Native Sidepanel Plugin
 
-Clone this repository and copy the plugin into Antigravity 2.x's native plugin directory (`~/.gemini/config/plugins/agy-quota`):
+Clone this repository and install the plugin into Antigravity 2.x's native plugin directory (`~/.gemini/config/plugins/agy-quota`):
 
 ```bash
-git clone https://github.com/awu5425/agy-sidepanel.git
-cd agy-sidepanel
+git clone https://github.com/awu5425/agy-quota.git
+cd agy-quota
 node install.mjs
 ```
 
 If Antigravity 2.x does not immediately list **AGY Quota** in the Plugins Manager or auxiliary side pane, restart Antigravity once so it reloads `~/.gemini/config/plugins/`.
 
-### Uninstall
+To uninstall the sidepanel plugin:
 
 ```bash
 node install.mjs --uninstall
@@ -92,18 +97,42 @@ node install.mjs --uninstall
 
 ---
 
-## CLI Diagnostics & Standalone Preview
+## Terminal CLI & Standalone Preview
 
-Inspect live JSON quota data fetched from the running Antigravity Language Server:
+### Direct Invocation (from repo)
 
 ```bash
-node sidecars/quota_panel/main.mjs --dump
+# Colored terminal dashboard (pools, 5h/weekly summary windows, credits)
+node cli.mjs
+
+# Include full per-model quota bars and disabled models
+node cli.mjs --models
+
+# Mask account email in terminal output
+node cli.mjs --mask
+
+# Disable ANSI colors (also honors NO_COLOR=1)
+node cli.mjs --no-color
+
+# Output raw JSON snapshot (alias: --dump)
+node cli.mjs --json
+
+# Launch standalone Web UI in your browser
+node cli.mjs --standalone --port 4318
+
+# Install / uninstall sidepanel plugin via CLI
+node cli.mjs --install
+node cli.mjs --uninstall
 ```
 
-Launch the sidepanel UI as a standalone local HTTP server (for browser inspection outside the Antigravity desktop pane):
+### Global `agy-quota` Command (Optional)
+
+Link the package globally with npm so you can run `agy-quota` from any directory:
 
 ```bash
-node sidecars/quota_panel/main.mjs --standalone --port 4318
+npm link
+agy-quota
+agy-quota --models --mask
 ```
 
 ---
