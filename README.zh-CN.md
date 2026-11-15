@@ -26,9 +26,13 @@
 
 ## 功能特性与跨平台支持
 
-- **跨平台适配（Windows / macOS / Linux）**：
-  - **客户端侧边栏模式**：安装路径统一基于 `os.homedir()`（`~/.gemini/config/plugins/agy-quota`），直接读取宿主注入的 `ANTIGRAVITY_LS_ADDRESS`、`ANTIGRAVITY_CSRF_TOKEN` 与 `sidecar_sdk`，三端行为完全一致。
-  - **终端 CLI / 独立预览进程发现**：会自动探测本机运行中的 Antigravity Language Server —— Windows 使用 `Get-CimInstance` + `netstat`（已实测通过），macOS 使用 `ps` + `lsof`，Linux 使用 `ps` + `ss`。*（macOS/Linux 分支按标准系统命令实现，当前仅在 Windows 实机验证。）*
+- **跨平台与无桌面 CLI 独立运行支持（Windows / macOS / Linux）**：
+  - **Antigravity 2.x 桌面客户端侧边栏**：安装路径统一基于 `os.homedir()`（`~/.gemini/config/plugins/agy-quota`），直接读取宿主注入的 `ANTIGRAVITY_LS_ADDRESS`、`ANTIGRAVITY_CSRF_TOKEN` 与 `sidecar_sdk`，三端一致。
+  - **独立终端 / 无桌面服务器多级自动连接**：
+    1. 宿主环境变量：`ANTIGRAVITY_LS_ADDRESS` & `ANTIGRAVITY_CSRF_TOKEN`（`agy` 会话内直接命中）
+    2. 本地最近有效 LS 连接缓存（`last_ls_conn.json`）
+    3. 操作系统进程探测（Windows `Get-CimInstance` + `netstat`；Linux `/proc/<pid>/environ` + `ps` + `ss`；macOS `ps` + `lsof`）
+    4. Cloud Code OAuth API 直连兜底（`retrieveUserQuotaSummary` + `loadCodeAssist`）：当无运行中 Language Server 时，自动读取 `~/.gemini/antigravity-cli/antigravity-oauth-token`（亦支持 `--profile-dir` 或 `~/.gemini-profiles/*` 多账号目录及自动刷新 Token），纯终端服务器也可脱离 `agy` 进程直接查询或预览。
 - **账号与订阅信息**：显示当前登录账号邮箱（UI 支持一键打码隐藏，CLI 支持 `--mask`）及订阅方案（如 `Google AI Pro`）。
 - **配额池视图 (`Pools` 与终端 CLI)**：
   - 按真实配额策略聚合为 `Gemini`、`Argon`、`Claude / GPT` 配额池
@@ -116,11 +120,18 @@ node cli.mjs --mask
 # 关闭 ANSI 彩色输出（也支持环境变量 NO_COLOR=1）
 node cli.mjs --no-color
 
+# 强制使用 Cloud Code OAuth API 直连模式（无需运行中的 Language Server）
+node cli.mjs --oauth
+
+# 指定特定的 agy-multi 多账号隔离目录
+node cli.mjs --oauth --profile-dir ~/.gemini-profiles/1
+
 # 输出完整 JSON 诊断快照（等价于 --dump）
 node cli.mjs --json
 
-# 启动独立本地 Web 服务，在浏览器预览面板
+# 启动独立本地 Web 服务（无头 Linux 服务器可加 --host 0.0.0.0 配合 SSH 转发或局域网访问）
 node cli.mjs --standalone --port 4318
+node cli.mjs --standalone --host 0.0.0.0 --port 14318
 
 # 通过 CLI 安装 / 卸载侧边栏插件
 node cli.mjs --install

@@ -1,9 +1,9 @@
 import { exec } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
 import { homedir, platform } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -159,8 +159,57 @@ function formatRunwayDuration(hours) {
 // Language Server Connection & Discovery
 // ---------------------------------------------------------------------------
 
+function resolveDataDir() {
+  return process.env.ANTIGRAVITY_EXECUTABLE_DATA_DIR
+    || join(homedir(), '.gemini', 'antigravity', 'sidecar_data', 'agy-quota', 'quota_panel');
+}
+
+const DATA_DIR = resolveDataDir();
+const HISTORY_PATH = join(DATA_DIR, 'quota_history.json');
+const LS_CONN_CACHE_PATH = join(DATA_DIR, 'last_ls_conn.json');
+const PROBE_TIMEOUT_MS = 2_000;
+
 const protocolCache = new Map();
 let cachedConn = null;
+
+function loadLastLsConn() {
+  try {
+    if (!existsSync(LS_CONN_CACHE_PATH)) return null;
+    const raw = JSON.parse(readFileSync(LS_CONN_CACHE_PATH, 'utf8'));
+    if (!raw?.host || !raw?.port || !raw?.csrfToken) return null;
+    return {
+      protocol: raw.protocol || null,
+      host: String(raw.host),
+      port: Number(raw.port),
+      csrfToken: String(raw.csrfToken),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function saveLastLsConn(conn) {
+  if (!conn?.host || !conn?.port || !conn?.csrfToken) return;
+  try {
+    mkdirSync(dirname(LS_CONN_CACHE_PATH), { recursive: true });
+    const key = `${conn.host}:${conn.port}`;
+    const payload = {
+      protocol: conn.protocol || protocolCache.get(key) || null,
+      host: conn.host,
+      port: Number(conn.port),
+      csrfToken: conn.csrfToken,
+      updatedAt: Date.now(),
+    };
+    writeFileSync(LS_CONN_CACHE_PATH, JSON.stringify(payload, null, 2), { encoding: 'utf8', mode: 0o600 });
+    try {
+      chmodSync(LS_CONN_CACHE_PATH, 0o600);
+    } catch {
+      // Ignore chmod error on Windows filesystems
+    }
+  } catch {
+    // Non-fatal if cache cannot be written
+  }
+}
 
 function parseAddress(rawAddress) {
   if (!rawAddress) return null;
@@ -181,8 +230,8 @@ function parseAddress(rawAddress) {
   return { protocol: null, host, port };
 }
 
-function sendRpcRequest({ protocol, host, port, path, csrfToken, body }) {
-  return new Promise((resolve, reject) => {
+function sendRpcRequest({ protocol, host, port, path, csrfToken, body, timeoutMs = HTTP_TIMEOUT_MS }) {
+  return new Promise((resolvePromise, reject) => {
     const payload = JSON.stringify(body);
     const client = protocol === 'https' ? https : http;
     const req = client.request(
@@ -198,7 +247,7 @@ function sendRpcRequest({ protocol, host, port, path, csrfToken, body }) {
           'x-codeium-csrf-token': csrfToken,
           'Content-Length': Buffer.byteLength(payload),
         },
-        timeout: HTTP_TIMEOUT_MS,
+        timeout: timeoutMs,
       },
       (res) => {
         let raw = '';
@@ -213,13 +262,13 @@ function sendRpcRequest({ protocol, host, port, path, csrfToken, body }) {
           } catch {
             json = null;
           }
-          resolve({ statusCode: res.statusCode || 0, json, raw });
+          resolvePromise({ statusCode: res.statusCode || 0, json, raw });
         });
       },
     );
     req.on('error', reject);
     req.on('timeout', () => {
-      req.destroy(new Error(`Request timeout (${HTTP_TIMEOUT_MS}ms)`));
+      req.destroy(new Error(`Request timeout (${timeoutMs}ms)`));
     });
     req.end(payload);
   });
@@ -306,10 +355,57 @@ async function discoverWindowsCandidates() {
   return candidates;
 }
 
-async function discoverUnixCandidates() {
-  const psRes = await runShell('ps -A -ww -o pid=,args=');
-  if (!psRes.stdout.trim()) return [];
+function discoverProcEnvCandidates() {
+  if (!existsSync('/proc')) return [];
   const candidates = [];
+  const seen = new Set();
+  let entries = [];
+  try {
+    entries = readdirSync('/proc');
+  } catch {
+    return [];
+  }
+
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    try {
+      const buf = readFileSync(`/proc/${entry}/environ`);
+      if (!buf || buf.length === 0) continue;
+      let lsAddr = '';
+      let csrf = '';
+      for (const pair of buf.toString('utf8').split('\0')) {
+        if (pair.startsWith('ANTIGRAVITY_LS_ADDRESS=')) {
+          lsAddr = pair.slice('ANTIGRAVITY_LS_ADDRESS='.length).trim();
+        } else if (pair.startsWith('ANTIGRAVITY_CSRF_TOKEN=')) {
+          csrf = pair.slice('ANTIGRAVITY_CSRF_TOKEN='.length).trim();
+        }
+        if (lsAddr && csrf) break;
+      }
+      if (!lsAddr || !csrf) continue;
+      const parsed = parseAddress(lsAddr);
+      if (!parsed) continue;
+      const dedupeKey = `${parsed.host}:${parsed.port}:${csrf}`;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      candidates.push({
+        pid: Number(entry),
+        protocol: parsed.protocol || null,
+        host: parsed.host || '127.0.0.1',
+        csrfToken: csrf,
+        ports: [parsed.port],
+        source: 'proc-env',
+      });
+    } catch {
+      // Ignore unreadable PIDs (EACCES/ENOENT)
+    }
+  }
+  return candidates;
+}
+
+async function discoverUnixCandidates() {
+  const candidates = discoverProcEnvCandidates();
+  const psRes = await runShell('ps -A -ww -o pid=,args=');
+  if (!psRes.stdout.trim()) return candidates;
 
   for (const line of psRes.stdout.split(/\r?\n/)) {
     const m = line.trim().match(/^(\d+)\s+(.+)$/);
@@ -334,9 +430,39 @@ async function discoverUnixCandidates() {
         if (p > 0 && p < 65536 && p !== extPort && !ports.includes(p)) ports.push(p);
       }
     }
-    candidates.push({ pid, csrfToken, ports });
+    candidates.push({ pid, csrfToken, ports, source: 'process-discovery' });
   }
   return candidates;
+}
+
+async function probeLsCandidate({ protocol = null, host = '127.0.0.1', port, csrfToken, source, pid }) {
+  const protos = protocol ? [protocol, protocol === 'http' ? 'https' : 'http'] : ['http', 'https'];
+  for (const proto of protos) {
+    try {
+      const probe = await sendRpcRequest({
+        protocol: proto,
+        host,
+        port,
+        path: USER_STATUS_PATH,
+        csrfToken,
+        body: REQUEST_METADATA,
+        timeoutMs: PROBE_TIMEOUT_MS,
+      });
+      if (probe.statusCode === 200 && probe.json?.userStatus) {
+        return {
+          protocol: proto,
+          host,
+          port,
+          csrfToken,
+          source,
+          ...(pid ? { pid } : {}),
+        };
+      }
+    } catch {
+      // Try next protocol/port
+    }
+  }
+  return null;
 }
 
 async function resolveConnection(forceRediscover = false) {
@@ -353,36 +479,33 @@ async function resolveConnection(forceRediscover = false) {
 
   if (!forceRediscover && cachedConn) return cachedConn;
 
+  const lastConn = loadLastLsConn();
+  if (lastConn) {
+    const alive = await probeLsCandidate({ ...lastConn, source: 'ls-cache' });
+    if (alive) {
+      cachedConn = alive;
+      return cachedConn;
+    }
+  }
+
   const candidates = platform() === 'win32'
     ? await discoverWindowsCandidates()
     : await discoverUnixCandidates();
 
   for (const cand of candidates) {
     for (const port of cand.ports) {
-      for (const proto of ['https', 'http']) {
-        try {
-          const probe = await sendRpcRequest({
-            protocol: proto,
-            host: '127.0.0.1',
-            port,
-            path: USER_STATUS_PATH,
-            csrfToken: cand.csrfToken,
-            body: REQUEST_METADATA,
-          });
-          if (probe.statusCode === 200 && probe.json?.userStatus) {
-            cachedConn = {
-              protocol: proto,
-              host: '127.0.0.1',
-              port,
-              csrfToken: cand.csrfToken,
-              source: 'process-discovery',
-              pid: cand.pid,
-            };
-            return cachedConn;
-          }
-        } catch {
-          // Try next protocol/port
-        }
+      const alive = await probeLsCandidate({
+        protocol: cand.protocol || null,
+        host: cand.host || '127.0.0.1',
+        port,
+        csrfToken: cand.csrfToken,
+        source: cand.source || 'process-discovery',
+        pid: cand.pid,
+      });
+      if (alive) {
+        cachedConn = alive;
+        saveLastLsConn(alive);
+        return cachedConn;
       }
     }
   }
@@ -393,15 +516,6 @@ async function resolveConnection(forceRediscover = false) {
 // ---------------------------------------------------------------------------
 // Quota History Persistence & Consumption Analytics
 // ---------------------------------------------------------------------------
-
-function resolveHistoryPath() {
-  const execDataDir = process.env.ANTIGRAVITY_EXECUTABLE_DATA_DIR;
-  if (execDataDir) return join(execDataDir, 'quota_history.json');
-  const candidate = join(homedir(), '.gemini', 'antigravity', 'sidecar_data', 'agy-quota', 'quota_panel', 'quota_history.json');
-  return candidate;
-}
-
-const HISTORY_PATH = resolveHistoryPath();
 
 function loadHistory() {
   try {
@@ -673,7 +787,7 @@ function parseSnapshot(userStatusData, summaryData, connInfo) {
   }
 
   // Summary buckets from RetrieveUserQuotaSummary
-  const rawGroups = summaryData?.response?.groups || [];
+  const rawGroups = summaryData?.response?.groups || summaryData?.groups || [];
   const summaryBucketsById = new Map();
   const summaryGroups = [];
 
@@ -745,6 +859,14 @@ function parseSnapshot(userStatusData, summaryData, connInfo) {
       resetIso = minModel.resetIso;
       resetTime = minModel.timeUntilReset;
       source = 'model';
+    } else if (weeklyBucket) {
+      hasData = true;
+      remaining = weeklyBucket.remainingPercentage;
+      rawRemaining = weeklyBucket.rawRemainingPercentage;
+      resetDate = weeklyBucket.resetDate;
+      resetIso = weeklyBucket.resetIso;
+      resetTime = weeklyBucket.timeUntilReset;
+      source = 'weekly-bucket';
     }
 
     if (cfg.hideWhenEmpty && !hasData && !weeklyBucket) continue;
@@ -794,7 +916,7 @@ function parseSnapshot(userStatusData, summaryData, connInfo) {
       userCredits,
     },
     pools,
-    summaryDescription: summaryData?.response?.description || '',
+    summaryDescription: summaryData?.response?.description || summaryData?.description || '',
     summaryGroups,
     models,
     disabledModels,
@@ -802,51 +924,486 @@ function parseSnapshot(userStatusData, summaryData, connInfo) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Direct Cloud Code OAuth Fallback (Standalone CLI without running LS)
+// ---------------------------------------------------------------------------
+
+const CLOUDCODE_HOSTS = ['daily-cloudcode-pa.googleapis.com', 'cloudcode-pa.googleapis.com'];
+
+function httpsPostRequest({ hostname, path, headers = {}, body = '', timeoutMs = HTTP_TIMEOUT_MS }) {
+  return new Promise((resolvePromise, reject) => {
+    const payload = typeof body === 'string' ? body : JSON.stringify(body);
+    const req = https.request(
+      {
+        hostname,
+        port: 443,
+        path,
+        method: 'POST',
+        headers: {
+          ...headers,
+          'Content-Length': Buffer.byteLength(payload),
+        },
+        timeout: timeoutMs,
+      },
+      (res) => {
+        let raw = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => {
+          raw += chunk;
+        });
+        res.on('end', () => {
+          let json = null;
+          try {
+            json = raw.trim() ? JSON.parse(raw) : null;
+          } catch {
+            json = null;
+          }
+          resolvePromise({ statusCode: res.statusCode || 0, json, raw });
+        });
+      },
+    );
+    req.on('error', reject);
+    req.on('timeout', () => {
+      req.destroy(new Error(`HTTPS request timeout (${timeoutMs}ms)`));
+    });
+    req.end(payload);
+  });
+}
+
+function parseJwtPayload(token) {
+  if (!token || typeof token !== 'string') return {};
+  const parts = token.split('.');
+  if (parts.length < 2) return {};
+  try {
+    const padded = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+      + '='.repeat((4 - (parts[1].length % 4)) % 4);
+    return JSON.parse(Buffer.from(padded, 'base64').toString('utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function getSearchHomes() {
+  const homes = [];
+  const addHome = (p) => {
+    if (!p) return;
+    const abs = resolve(p);
+    if (!homes.includes(abs)) homes.push(abs);
+  };
+  addHome(homedir());
+  addHome(process.env.AGY_REAL_HOME);
+  return homes;
+}
+
+function parseOAuthTokenEntry(tokenPath) {
+  try {
+    const authData = JSON.parse(readFileSync(tokenPath, 'utf8'));
+    const tokenObj = authData?.token || {};
+    if (!tokenObj.access_token && !tokenObj.refresh_token) return null;
+    const expMs = tokenObj.expiry ? Date.parse(String(tokenObj.expiry)) : NaN;
+    const isFresh = Boolean(tokenObj.access_token) && (!Number.isFinite(expMs) || expMs > Date.now() + 60_000);
+    let mtimeMs = 0;
+    try {
+      mtimeMs = statSync(tokenPath).mtimeMs || 0;
+    } catch {
+      mtimeMs = 0;
+    }
+    return { tokenPath, authData, tokenObj, isFresh, mtimeMs };
+  } catch {
+    return null;
+  }
+}
+
+function findOAuthTokenFiles(profileDirOption = null) {
+  const seen = new Set();
+  const direct = [];
+  const profileCandidates = [];
+
+  const pushPath = (baseDir, bucket) => {
+    if (!baseDir) return;
+    const tokenPath = join(resolve(baseDir), '.gemini', 'antigravity-cli', 'antigravity-oauth-token');
+    if (seen.has(tokenPath) || !existsSync(tokenPath)) return;
+    seen.add(tokenPath);
+    const parsed = parseOAuthTokenEntry(tokenPath);
+    if (parsed) bucket.push(parsed);
+  };
+
+  if (profileDirOption) pushPath(profileDirOption, direct);
+  if (process.env.GEMINI_CLI_PROFILE_DIR) pushPath(process.env.GEMINI_CLI_PROFILE_DIR, direct);
+
+  const homes = getSearchHomes();
+  for (const h of homes) pushPath(h, direct);
+
+  for (const h of homes) {
+    for (const profilesFolder of ['.gemini-profiles', '.agy-profiles']) {
+      const root = join(h, profilesFolder);
+      if (!existsSync(root)) continue;
+      try {
+        for (const entry of readdirSync(root)) {
+          pushPath(join(root, entry), profileCandidates);
+        }
+      } catch {
+        // Ignore unreadable profile folders
+      }
+    }
+  }
+
+  profileCandidates.sort((a, b) => {
+    if (a.isFresh !== b.isFresh) return a.isFresh ? -1 : 1;
+    return b.mtimeMs - a.mtimeMs;
+  });
+
+  return [...direct, ...profileCandidates];
+}
+
+function readEnvFileIntoMap(filePath) {
+  const out = {};
+  if (!existsSync(filePath)) return out;
+  try {
+    for (const rawLine of readFileSync(filePath, 'utf8').split(/\r?\n/)) {
+      let line = rawLine.trim();
+      if (!line || line.startsWith('#')) continue;
+      if (line.startsWith('export ')) line = line.slice(7).trim();
+      const eqIdx = line.indexOf('=');
+      if (eqIdx <= 0) continue;
+      const k = line.slice(0, eqIdx).trim();
+      const v = line.slice(eqIdx + 1).trim().replace(/^['"]|['"]$/g, '');
+      if (k && v) out[k] = v;
+    }
+  } catch {
+    // Ignore unreadable env file
+  }
+  return out;
+}
+
+function findLocalAgyBinaries() {
+  const bins = [];
+  const addBin = (p) => {
+    if (!p || !existsSync(p)) return;
+    const abs = resolve(p);
+    if (!bins.includes(abs)) bins.push(abs);
+  };
+
+  const pathDirs = (process.env.PATH || '').split(delimiter).filter(Boolean);
+  const names = platform() === 'win32'
+    ? ['agy.exe', 'antigravity.exe', 'jetski.exe']
+    : ['agy', 'antigravity', 'jetski'];
+
+  for (const dir of pathDirs) {
+    for (const name of names) {
+      const p = join(dir, name);
+      if (!p.toLowerCase().endsWith('.cmd') && !p.toLowerCase().endsWith('.bat')) {
+        addBin(p);
+      }
+    }
+  }
+
+  for (const h of getSearchHomes()) {
+    addBin(join(h, '.local', 'bin', platform() === 'win32' ? 'agy.exe' : 'agy'));
+  }
+  if (platform() === 'win32' && process.env.LOCALAPPDATA) {
+    addBin(join(process.env.LOCALAPPDATA, 'agy', 'bin', 'agy.exe'));
+  } else {
+    addBin('/usr/local/bin/agy');
+  }
+  return bins;
+}
+
+function resolveOAuthClientCredentials() {
+  const envCid = (process.env.AGY_OAUTH_CLIENT_ID || process.env.GOOGLE_OAUTH_CLIENT_ID || '').trim();
+  const envSec = (process.env.AGY_OAUTH_CLIENT_SECRET || process.env.GOOGLE_OAUTH_CLIENT_SECRET || '').trim();
+  if (envCid && envSec) return { clientId: envCid, clientSecret: envSec };
+
+  for (const h of getSearchHomes()) {
+    for (const fileName of ['env', 'oauth.env']) {
+      const vars = readEnvFileIntoMap(join(h, '.config', 'agy-multi', fileName));
+      const cid = vars.AGY_OAUTH_CLIENT_ID || vars.GOOGLE_OAUTH_CLIENT_ID || '';
+      const sec = vars.AGY_OAUTH_CLIENT_SECRET || vars.GOOGLE_OAUTH_CLIENT_SECRET || '';
+      if (cid && sec) return { clientId: cid, clientSecret: sec };
+    }
+  }
+
+  for (const binPath of findLocalAgyBinaries()) {
+    try {
+      const text = readFileSync(binPath).toString('latin1');
+      const cidMatch = text.match(/107[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com/);
+      const secMatch = text.match(/GOCSPX-[A-Za-z0-9_-]{28}/);
+      if (cidMatch && secMatch) {
+        return { clientId: cidMatch[0], clientSecret: secMatch[0] };
+      }
+    } catch {
+      // Ignore unreadable binary
+    }
+  }
+  return { clientId: '', clientSecret: '' };
+}
+
+async function refreshOAuthAccessToken(tokenFile, authData, tokenObj) {
+  const refreshToken = tokenObj?.refresh_token;
+  if (!refreshToken) return null;
+
+  const { clientId, clientSecret } = resolveOAuthClientCredentials();
+  if (!clientId || !clientSecret) return null;
+
+  const body = new URLSearchParams({
+    client_id: clientId,
+    client_secret: clientSecret,
+    refresh_token: refreshToken,
+    grant_type: 'refresh_token',
+  }).toString();
+
+  const res = await httpsPostRequest({
+    hostname: 'oauth2.googleapis.com',
+    path: '/token',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+  });
+
+  if (res.statusCode !== 200 || !res.json?.access_token) {
+    return null;
+  }
+
+  tokenObj.access_token = res.json.access_token;
+  if (Number.isFinite(Number(res.json.expires_in))) {
+    tokenObj.expiry = new Date(Date.now() + Number(res.json.expires_in) * 1000).toISOString();
+  }
+  authData.token = tokenObj;
+  try {
+    writeFileSync(tokenFile, JSON.stringify(authData, null, 2), { encoding: 'utf8', mode: 0o600 });
+    try {
+      chmodSync(tokenFile, 0o600);
+    } catch {
+      // Ignore chmod error on Windows
+    }
+  } catch {
+    // Non-fatal
+  }
+  return tokenObj.access_token;
+}
+
+async function callCloudCodeEndpoint(accessToken, endpointPath, body) {
+  for (const host of CLOUDCODE_HOSTS) {
+    try {
+      const res = await httpsPostRequest({
+        hostname: host,
+        path: endpointPath,
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+          'User-Agent': 'antigravity-cli',
+        },
+        body,
+      });
+      if (res.statusCode === 200 && res.json) {
+        return { ok: true, host, json: res.json };
+      }
+      if (res.statusCode === 401) {
+        return { ok: false, unauthorized: true, host, statusCode: 401 };
+      }
+    } catch {
+      // Try next Cloud Code host
+    }
+  }
+  return { ok: false, unauthorized: false, host: CLOUDCODE_HOSTS[0], statusCode: 0 };
+}
+
+function buildClientModelConfigsFromCloud(availableModelsData) {
+  const rawMap = availableModelsData?.models;
+  if (!rawMap || typeof rawMap !== 'object') return [];
+  const seenLabels = new Set();
+  const configs = [];
+
+  for (const entry of Object.values(rawMap)) {
+    if (!entry || !entry.displayName || !entry.quotaInfo) continue;
+    if (seenLabels.has(entry.displayName)) continue;
+    seenLabels.add(entry.displayName);
+    configs.push({
+      label: entry.displayName,
+      modelOrAlias: { model: entry.model || entry.vertexModelId || entry.displayName },
+      disabled: Boolean(entry.disabled),
+      quotaInfo: entry.quotaInfo,
+    });
+  }
+  return configs;
+}
+
+function buildUserStatusFromOAuth(email, name, loadCodeAssistData, availableModelsData = null) {
+  let tierObj = loadCodeAssistData?.paidTier || loadCodeAssistData?.currentTier || null;
+  if (!tierObj && Array.isArray(loadCodeAssistData?.allowedTiers)) {
+    tierObj = loadCodeAssistData.allowedTiers.find((t) => t?.id === 'free-tier' || t?.isDefault === true) || null;
+  }
+  const tierId = tierObj?.id || '';
+  const rawTierName = tierObj?.name || tierId || '';
+  const lower = rawTierName.toLowerCase();
+  let planName = rawTierName;
+  if (lower.includes('ultra') || lower.includes('helium')) planName = 'Ultra';
+  else if (lower.includes('pro') || lower.includes('premium') || lower.includes('advanced')) planName = 'Pro';
+  else if (lower.includes('free') || lower.includes('starter')) planName = 'Free';
+
+  return {
+    userStatus: {
+      name: name || '',
+      email: email || '',
+      userTier: {
+        id: tierId,
+        name: rawTierName || (planName ? `Google AI ${planName}` : ''),
+        description: tierObj?.description || '',
+      },
+      planStatus: {
+        planInfo: {
+          planName,
+          teamsTier: tierId,
+        },
+      },
+      cascadeModelConfigData: {
+        clientModelConfigs: buildClientModelConfigsFromCloud(availableModelsData),
+      },
+    },
+  };
+}
+
+async function fetchViaOAuthToken(options = {}) {
+  const tokenEntries = findOAuthTokenFiles(options.profileDir || null);
+  const selected = tokenEntries[0] || null;
+  if (!selected) {
+    throw new Error('No antigravity-oauth-token file found for OAuth fallback.');
+  }
+
+  const { tokenPath, authData, tokenObj } = selected;
+  const idToken = authData.id_token || tokenObj.id_token || '';
+  const claims = parseJwtPayload(idToken);
+  const email = claims.email || authData.email || authData.id_token_email || '';
+  const name = claims.name || '';
+
+  let accessToken = tokenObj.access_token || '';
+  const expMs = tokenObj.expiry ? Date.parse(String(tokenObj.expiry)) : NaN;
+  const isExpired = !accessToken || (Number.isFinite(expMs) && expMs <= Date.now() + 60_000);
+
+  if (isExpired && tokenObj.refresh_token) {
+    accessToken = (await refreshOAuthAccessToken(tokenPath, authData, tokenObj)) || accessToken;
+  }
+  if (!accessToken) {
+    throw new Error(`OAuth token in ${tokenPath} is missing/expired and could not be refreshed.`);
+  }
+
+  let subRes = await callCloudCodeEndpoint(
+    accessToken,
+    '/v1internal:loadCodeAssist',
+    { metadata: { ideType: 'ANTIGRAVITY' } },
+  );
+  if (subRes.unauthorized && tokenObj.refresh_token) {
+    const refreshed = await refreshOAuthAccessToken(tokenPath, authData, tokenObj);
+    if (refreshed) {
+      accessToken = refreshed;
+      subRes = await callCloudCodeEndpoint(
+        accessToken,
+        '/v1internal:loadCodeAssist',
+        { metadata: { ideType: 'ANTIGRAVITY' } },
+      );
+    }
+  }
+
+  const projectId = subRes.ok ? subRes.json?.cloudaicompanionProject : null;
+  const quotaReqBody = projectId ? { project: projectId } : {};
+
+  let quotaRes = await callCloudCodeEndpoint(accessToken, '/v1internal:retrieveUserQuotaSummary', quotaReqBody);
+  if (quotaRes.unauthorized && tokenObj.refresh_token) {
+    const refreshed = await refreshOAuthAccessToken(tokenPath, authData, tokenObj);
+    if (refreshed) {
+      accessToken = refreshed;
+      quotaRes = await callCloudCodeEndpoint(accessToken, '/v1internal:retrieveUserQuotaSummary', quotaReqBody);
+    }
+  }
+
+  const modelsRes = await callCloudCodeEndpoint(accessToken, '/v1internal:fetchAvailableModels', quotaReqBody);
+
+  if ((!quotaRes.ok || !quotaRes.json) && (!modelsRes.ok || !modelsRes.json)) {
+    throw new Error('Cloud Code retrieveUserQuotaSummary and fetchAvailableModels failed with OAuth token.');
+  }
+
+  const userStatusData = buildUserStatusFromOAuth(
+    email,
+    name,
+    subRes.ok ? subRes.json : null,
+    modelsRes.ok ? modelsRes.json : null,
+  );
+  return parseSnapshot(userStatusData, quotaRes.ok ? quotaRes.json : { groups: [] }, {
+    host: quotaRes.ok ? quotaRes.host : modelsRes.host,
+    port: 443,
+    source: 'oauth-token',
+  });
+}
+
 let cachedSnapshot = null;
 let cachedSnapshotAt = 0;
 
-async function fetchQuotaSnapshot(force = false) {
+async function fetchQuotaSnapshot(force = false, options = {}) {
+  const effectiveOptions = { ...runtimeOptions, ...options };
   const now = Date.now();
-  if (!force && cachedSnapshot && now - cachedSnapshotAt < SNAPSHOT_CACHE_TTL_MS) {
+  if (!force && !effectiveOptions.forceOAuth && cachedSnapshot && now - cachedSnapshotAt < SNAPSHOT_CACHE_TTL_MS) {
     return cachedSnapshot;
   }
 
-  let conn = await resolveConnection(false);
-  let statusRes;
+  if (effectiveOptions.forceOAuth) {
+    const snapshot = await fetchViaOAuthToken(effectiveOptions);
+    cachedSnapshot = snapshot;
+    cachedSnapshotAt = Date.now();
+    return snapshot;
+  }
+
+  let lsError = null;
   try {
-    statusRes = await rpcPost(conn, USER_STATUS_PATH, REQUEST_METADATA);
-  } catch (err) {
-    // Re-discover if standalone connection dropped
-    if (conn.source !== 'env') {
-      cachedConn = null;
-      conn = await resolveConnection(true);
+    let conn = await resolveConnection(false);
+    let statusRes;
+    try {
       statusRes = await rpcPost(conn, USER_STATUS_PATH, REQUEST_METADATA);
-    } else {
-      throw err;
+    } catch (err) {
+      if (conn.source !== 'env') {
+        cachedConn = null;
+        conn = await resolveConnection(true);
+        statusRes = await rpcPost(conn, USER_STATUS_PATH, REQUEST_METADATA);
+      } else {
+        throw err;
+      }
     }
+
+    if (statusRes.statusCode === 401 || statusRes.statusCode === 403) {
+      throw new Error(`Language Server authentication failed (HTTP ${statusRes.statusCode}).`);
+    }
+    if (statusRes.statusCode !== 200 || !statusRes.json?.userStatus) {
+      throw new Error(`GetUserStatus failed (HTTP ${statusRes.statusCode}).`);
+    }
+
+    saveLastLsConn(conn);
+
+    let summaryJson = null;
+    try {
+      const summaryRes = await rpcPost(conn, QUOTA_SUMMARY_PATH, REQUEST_METADATA);
+      if (summaryRes.statusCode === 200 && summaryRes.json?.response) {
+        summaryJson = summaryRes.json;
+      }
+    } catch {
+      // Optional RPC on older servers
+    }
+
+    const snapshot = parseSnapshot(statusRes.json, summaryJson, conn);
+    cachedSnapshot = snapshot;
+    cachedSnapshotAt = Date.now();
+    return snapshot;
+  } catch (err) {
+    lsError = err;
   }
 
-  if (statusRes.statusCode === 401 || statusRes.statusCode === 403) {
-    throw new Error(`Language Server authentication failed (HTTP ${statusRes.statusCode}).`);
-  }
-  if (statusRes.statusCode !== 200 || !statusRes.json?.userStatus) {
-    throw new Error(`GetUserStatus failed (HTTP ${statusRes.statusCode}).`);
-  }
-
-  let summaryJson = null;
   try {
-    const summaryRes = await rpcPost(conn, QUOTA_SUMMARY_PATH, REQUEST_METADATA);
-    if (summaryRes.statusCode === 200 && summaryRes.json?.response) {
-      summaryJson = summaryRes.json;
-    }
-  } catch {
-    // Optional RPC on older servers
+    const snapshot = await fetchViaOAuthToken(effectiveOptions);
+    cachedSnapshot = snapshot;
+    cachedSnapshotAt = Date.now();
+    return snapshot;
+  } catch (oauthErr) {
+    const lsMsg = lsError instanceof Error ? lsError.message : String(lsError);
+    const oauthMsg = oauthErr instanceof Error ? oauthErr.message : String(oauthErr);
+    throw new Error(`${lsMsg} (OAuth fallback failed: ${oauthMsg})`);
   }
-
-  const snapshot = parseSnapshot(statusRes.json, summaryJson, conn);
-  cachedSnapshot = snapshot;
-  cachedSnapshotAt = Date.now();
-  return snapshot;
 }
 
 // ---------------------------------------------------------------------------
@@ -936,14 +1493,17 @@ Usage:
   node main.mjs --cli [options]       Render colored quota dashboard in terminal
   node main.mjs --dump                Print full quota snapshot as JSON
   node main.mjs --json                Alias for --dump
-  node main.mjs --standalone [--port <n>]
+  node main.mjs --standalone [--host <addr>] [--port <n>]
                                       Start standalone local Web UI server
   node main.mjs --help, -h            Show this help message
 
 CLI Options:
-  --models, -m    Include per-model quota breakdown and disabled models
-  --mask          Mask account email (e.g. bi***@gmail.com)
-  --no-color      Disable ANSI terminal colors (also honors NO_COLOR)`;
+  --models, -m          Include per-model quota breakdown and disabled models
+  --mask                Mask account email (e.g. bi***@gmail.com)
+  --no-color            Disable ANSI terminal colors (also honors NO_COLOR)
+  --oauth               Force Cloud Code OAuth API fallback (~/.gemini/antigravity-cli)
+  --profile-dir <dir>   Target profile home containing .gemini/antigravity-cli
+  --host <addr>         Bind address for --standalone (default: 127.0.0.1)`;
 
 async function runCliMode(args) {
   const useColor = !args.includes('--no-color') && !process.env.NO_COLOR;
@@ -955,12 +1515,15 @@ async function runCliMode(args) {
   const { userInfo, connection, pools, summaryGroups, credits, models, disabledModels } = snap;
   const displayEmail = maskEmail ? maskEmailAddress(userInfo?.email) : (userInfo?.email || '-');
   const tierLabel = userInfo?.tier || userInfo?.planName || 'Unknown';
+  const connLabel = connection?.source === 'oauth-token'
+    ? `Cloud Code: ${connection?.host || '-'}`
+    : `LS: ${connection?.host || '-'}:${connection?.port || '-'}`;
 
   const lines = [];
   lines.push(`${c.bold(c.cyan('AGY Quota'))} ${c.dim(`· ${new Date(snap.timestamp).toLocaleString()}`)}`);
   lines.push(
     `${c.dim('Account:')} ${c.bold(displayEmail)} ${c.dim(`(${tierLabel})`)}  ` +
-    `${c.dim('LS:')} ${connection?.host || '-'}:${connection?.port || '-'} ${c.dim(`[${connection?.source || '-'}]`)}`,
+    `${connLabel} ${c.dim(`[${connection?.source || '-'}]`)}`,
   );
   lines.push('');
 
@@ -1033,27 +1596,31 @@ async function runCliMode(args) {
 
   if (showModels) {
     lines.push(c.bold(c.cyan(`Models (${models?.length || 0})`)));
-    for (const model of models || []) {
-      const name = String(model.label || model.modelId).slice(0, 28).padEnd(29);
-      const bar = c.byPct(model.remainingPercentage, renderProgressBar(model.remainingPercentage));
-      const pct = c.byPct(model.remainingPercentage, formatPctLabel(model.remainingPercentage));
-      const suffix = model.isExhausted ? 'EXHAUSTED' : `reset ${model.timeUntilReset || '-'}`;
-      lines.push(`  ${name} [${bar}] ${pct}  ${c.dim(`${model.groupLabel || ''} · ${suffix}`)}`);
+    if ((models?.length || 0) === 0 && connection?.source === 'oauth-token') {
+      lines.push(c.dim('  Per-model quotas are only exposed by a live Language Server (OAuth mode shows pools & summary windows).'));
+    } else {
+      for (const model of models || []) {
+        const name = String(model.label || model.modelId).slice(0, 28).padEnd(29);
+        const bar = c.byPct(model.remainingPercentage, renderProgressBar(model.remainingPercentage));
+        const pct = c.byPct(model.remainingPercentage, formatPctLabel(model.remainingPercentage));
+        const suffix = model.isExhausted ? 'EXHAUSTED' : `reset ${model.timeUntilReset || '-'}`;
+        lines.push(`  ${name} [${bar}] ${pct}  ${c.dim(`${model.groupLabel || ''} · ${suffix}`)}`);
+      }
+      if (Array.isArray(disabledModels) && disabledModels.length > 0) {
+        lines.push('');
+        lines.push(c.dim(`Disabled Models (${disabledModels.length}): ${disabledModels.map((m) => m.label).join(', ')}`));
+      }
     }
-    if (Array.isArray(disabledModels) && disabledModels.length > 0) {
-      lines.push('');
-      lines.push(c.dim(`Disabled Models (${disabledModels.length}): ${disabledModels.map((m) => m.label).join(', ')}`));
-    }
-  } else {
+  } else if (connection?.source !== 'oauth-token') {
     lines.push(c.dim('Tip: pass --models (-m) to view per-model quota breakdown.'));
   }
 
   console.log(lines.join('\n'));
 }
 
-async function runStandaloneServer(port = 0) {
+async function runStandaloneServer(port = 0, host = '127.0.0.1') {
   const server = http.createServer(async (req, res) => {
-    const url = new URL(req.url || '/', 'http://127.0.0.1');
+    const url = new URL(req.url || '/', `http://${host === '0.0.0.0' ? '127.0.0.1' : host}`);
     if (req.method === 'GET' && url.pathname === '/') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(readAsset('index.html'));
@@ -1090,9 +1657,9 @@ async function runStandaloneServer(port = 0) {
     res.end('Not found');
   });
 
-  server.listen(port, '127.0.0.1', () => {
+  server.listen(port, host, () => {
     const addr = server.address();
-    console.log(`[quota_panel] standalone server listening on http://127.0.0.1:${addr.port}`);
+    console.log(`[quota_panel] standalone server listening on http://${host}:${addr.port}`);
   });
 }
 
@@ -1118,7 +1685,25 @@ async function runSidecarMode() {
   await app.run();
 }
 
+function getFlagValue(argv, flag) {
+  const prefix = `${flag}=`;
+  for (let i = 0; i < argv.length; i += 1) {
+    if (argv[i] === flag && argv[i + 1] && !argv[i + 1].startsWith('--')) {
+      return argv[i + 1];
+    }
+    if (argv[i].startsWith(prefix)) {
+      return argv[i].slice(prefix.length);
+    }
+  }
+  return null;
+}
+
 const args = process.argv.slice(2);
+var runtimeOptions = {
+  forceOAuth: args.includes('--oauth'),
+  profileDir: getFlagValue(args, '--profile-dir'),
+};
+
 if (args.includes('--help') || args.includes('-h')) {
   console.log(CLI_HELP_TEXT);
 } else if (args.includes('--dump') || args.includes('--json')) {
@@ -1132,9 +1717,9 @@ if (args.includes('--help') || args.includes('-h')) {
     process.exitCode = 1;
   });
 } else if (args.includes('--standalone') || !process.env.ANTIGRAVITY_SIDECAR_WEB_PORT) {
-  const portIdx = args.indexOf('--port');
-  const requestedPort = portIdx >= 0 ? Number(args[portIdx + 1]) || 0 : Number(process.env.PORT) || 0;
-  runStandaloneServer(requestedPort).catch((err) => {
+  const requestedPort = Number(getFlagValue(args, '--port')) || Number(process.env.PORT) || 0;
+  const requestedHost = getFlagValue(args, '--host') || process.env.HOST || '127.0.0.1';
+  runStandaloneServer(requestedPort, requestedHost).catch((err) => {
     console.error('[quota_panel] fatal:', err);
     process.exitCode = 1;
   });

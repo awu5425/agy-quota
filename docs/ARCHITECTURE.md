@@ -60,7 +60,15 @@ Antigravity 2.x 启动并连接到本地 Language Server 后，会自动扫描 `
 | `ANTIGRAVITY_SIDECAR_UI_TOKEN` | 宿主与 Sidecar 通信的鉴权 Token |
 | `ANTIGRAVITY_EXECUTABLE_DATA_DIR` | 应用数据目录（`quota_panel` 用于存放本地 7 天轻量化配额快照） |
 
-在终端 CLI 与独立调试模式（`cli.mjs` / `--cli` / `--standalone` / `--dump`）下，如果环境变量不存在，`sidecars/quota_panel/main.mjs` 也会按操作系统自动探测本机运行中的 Antigravity Language Server 进程参数与监听端口（Windows 使用 `Get-CimInstance` + `netstat`，macOS 使用 `ps` + `lsof`，Linux 使用 `ps` + `ss`），提取地址与 `csrf_token`。
+在独立终端（未在 `agy` 会话内）或无桌面端环境下，`sidecars/quota_panel/main.mjs` 按以下优先级多级自动发现并获取配额：
+
+1. **宿主环境变量**：读取 `ANTIGRAVITY_LS_ADDRESS` 与 `ANTIGRAVITY_CSRF_TOKEN`（在 `agy` CLI 会话或桌面 Sidecar 内直接命中）。
+2. **最近连接缓存 (`last_ls_conn.json`)**：每次成功连接 Language Server 后将其地址与 Token 保存在数据目录的 `last_ls_conn.json`（权限 `0600`），脱离 `agy` 会话后优先以 2s 超时探测该连接是否仍存活。
+3. **系统进程与 `/proc` 环境变量探测**：
+   - Windows：通过 `Get-CimInstance Win32_Process` + `netstat -ano` 提取 `--csrf_token` 与监听端口；
+   - Linux：同时扫描 `/proc/<pid>/environ` 中的 `ANTIGRAVITY_LS_ADDRESS` / `ANTIGRAVITY_CSRF_TOKEN`（适配纯 CLI 版 `agy` 进程），以及 `ps` + `ss -tlnp` 中的 `--csrf_token`；
+   - macOS：通过 `ps` + `lsof` 探测。
+4. **Cloud Code OAuth API 直连兜底 (`oauth-token`)**：当本机没有任何存活的 Language Server 进程时（或手动传入 `--oauth`），自动读取 `~/.gemini/antigravity-cli/antigravity-oauth-token`（也支持 `--profile-dir` 与 `~/.gemini-profiles/*` 多账号隔离目录，并在 Token 过期时自动读取 `env` / `agy` 二进制中的客户端凭证刷新），直接请求 `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary` 与 `/v1internal:loadCodeAssist` 构建配额池与 5h/周窗口摘要视图。
 
 前端方面，`sidecar_sdk` 提供的 `/preload.js` 会完成两件事：
 

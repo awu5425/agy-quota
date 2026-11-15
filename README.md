@@ -24,9 +24,13 @@ For technical details on plugin discovery, RPC endpoints, and pool aggregation, 
 
 ## Features & Platform Support
 
-- **Cross-Platform Design (Windows, macOS, Linux)**:
-  - **In Antigravity Side Pane**: Uses `os.homedir()` (`~/.gemini/config/plugins/agy-quota`), host-injected `ANTIGRAVITY_LS_ADDRESS` & `ANTIGRAVITY_CSRF_TOKEN`, and `sidecar_sdk` identically across Windows, macOS, and Linux.
-  - **Standalone / CLI Process Discovery**: Automatically detects running Language Server processes via `Get-CimInstance` + `netstat` (Windows, verified), `ps` + `lsof` (macOS), and `ps` + `ss` (Linux). *(Verified on Windows Antigravity 2.x; macOS/Linux discovery branches follow standard OS tooling.)*
+- **Cross-Platform Design (Windows, macOS, Linux Desktop & CLI)**:
+  - **In Antigravity 2.x Desktop Side Pane**: Uses `os.homedir()` (`~/.gemini/config/plugins/agy-quota`), host-injected `ANTIGRAVITY_LS_ADDRESS` & `ANTIGRAVITY_CSRF_TOKEN`, and `sidecar_sdk` identically across Windows, macOS, and Linux.
+  - **Standalone / Independent Terminal Multi-Tier Resolution**:
+    1. `ANTIGRAVITY_LS_ADDRESS` & `ANTIGRAVITY_CSRF_TOKEN` env vars (inside `agy` sessions)
+    2. Local Language Server connection cache (`last_ls_conn.json`)
+    3. OS process discovery (`Get-CimInstance` + `netstat` on Windows; `/proc/<pid>/environ` + `ps` + `ss` on Linux; `ps` + `lsof` on macOS)
+    4. Direct Google Cloud Code OAuth API fallback (`retrieveUserQuotaSummary` + `loadCodeAssist`) using `~/.gemini/antigravity-cli/antigravity-oauth-token` (or `--profile-dir` / `~/.gemini-profiles/*`, with automatic token refresh) when no Language Server is running — ideal for headless Linux CLI servers.
 - **Account & Tier Summary**: Displays account name/email (with one-click privacy masking / `--mask`) and subscription tier (e.g., `Google AI Pro`).
 - **Quota Pools (`Pools` view & CLI)**:
   - Aggregates models into native quota pools (`Gemini`, `Argon`, `Claude / GPT`)
@@ -114,11 +118,18 @@ node cli.mjs --mask
 # Disable ANSI colors (also honors NO_COLOR=1)
 node cli.mjs --no-color
 
+# Force direct Cloud Code OAuth API fallback (no running Language Server needed)
+node cli.mjs --oauth
+
+# Target a specific agy-multi isolated profile directory
+node cli.mjs --oauth --profile-dir ~/.gemini-profiles/1
+
 # Output raw JSON snapshot (alias: --dump)
 node cli.mjs --json
 
-# Launch standalone Web UI in your browser
+# Launch standalone Web UI in your browser (supports --host 0.0.0.0 for remote SSH/server preview)
 node cli.mjs --standalone --port 4318
+node cli.mjs --standalone --host 0.0.0.0 --port 14318
 
 # Install / uninstall sidepanel plugin via CLI
 node cli.mjs --install

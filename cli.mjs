@@ -16,8 +16,10 @@ Usage:
   agy-quota --models, -m           Include per-model quota breakdown
   agy-quota --mask                 Mask account email (e.g. bi***@gmail.com)
   agy-quota --no-color             Disable ANSI colors (also honors NO_COLOR)
+  agy-quota --oauth                Force Cloud Code OAuth API fallback
+  agy-quota --profile-dir <dir>    Target profile home for OAuth fallback
   agy-quota --json | --dump        Output full quota snapshot as JSON
-  agy-quota --standalone [--port <n>]
+  agy-quota --standalone [--host <addr>] [--port <n>]
                                    Start standalone local HTTP preview server
   agy-quota --install              Install native Antigravity 2.x sidepanel plugin
   agy-quota --uninstall            Uninstall native sidepanel plugin
