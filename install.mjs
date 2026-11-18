@@ -1,22 +1,26 @@
 #!/usr/bin/env node
 
-import { cpSync, existsSync, mkdirSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import http from 'node:http';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const PLUGIN_DIR_NAME = 'agy-quota';
+export const PLUGIN_DIR_NAME = 'agy-quota';
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = resolve(dirname(__filename));
-const TARGET_ROOT = join(homedir(), '.gemini', 'config', 'plugins', PLUGIN_DIR_NAME);
+export const DEFAULT_SIDECAR_TARGET = join(homedir(), '.gemini', 'config', 'plugins', PLUGIN_DIR_NAME);
 
-const COPY_ENTRIES = [
+export const SIDECAR_COPY_ENTRIES = [
+  'package.json',
   'plugin.json',
   'README.md',
   'README.zh-CN.md',
   'LICENSE',
   'NOTICE',
   'assets',
+  join('src', 'quota-core.cjs'),
   join('sidecars', 'quota_panel', 'package.json'),
   join('sidecars', 'quota_panel', 'sidecar.json'),
   join('sidecars', 'quota_panel', 'main.mjs'),
@@ -25,59 +29,268 @@ const COPY_ENTRIES = [
   join('sidecars', 'quota_panel', 'app.js'),
 ];
 
+function readRepoVersion() {
+  try {
+    const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
+    return pkg.version || '1.2.0';
+  } catch {
+    return '1.2.0';
+  }
+}
+
+function deleteFilesOnlyRecursive(dirPath) {
+  if (!existsSync(dirPath)) return;
+  for (const entry of readdirSync(dirPath, { withFileTypes: true })) {
+    const full = join(dirPath, entry.name);
+    if (entry.isDirectory()) {
+      deleteFilesOnlyRecursive(full);
+    } else {
+      try {
+        rmSync(full, { force: true });
+      } catch {
+        // ignore locked file during initial pass
+      }
+    }
+  }
+}
+
+function probeIsQuotaPanelSidecar(port, timeoutMs = 450) {
+  return new Promise((resolveMatch) => {
+    const req = http.get(
+      { host: '127.0.0.1', port, path: '/styles.css', timeout: timeoutMs },
+      (res) => {
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => {
+          if (body.length < 4096) body += chunk;
+        });
+        res.on('end', () => {
+          resolveMatch(body.includes('--qp-') || body.includes('quota_panel'));
+        });
+      },
+    );
+    req.on('timeout', () => {
+      req.destroy();
+      resolveMatch(false);
+    });
+    req.on('error', () => resolveMatch(false));
+  });
+}
+
+export async function stopOrphanedQuotaPanelSidecars() {
+  if (process.platform !== 'win32') {
+    return;
+  }
+  try {
+    const out = execFileSync('netstat', ['-ano', '-p', 'tcp'], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 3000,
+    });
+    const candidates = [];
+    for (const line of out.split(/\r?\n/)) {
+      const m = line.match(/^\s*TCP\s+127\.0\.0\.1:(\d+)\s+\S+\s+LISTENING\s+(\d+)\s*$/i);
+      if (m) {
+        const port = Number(m[1]);
+        const pid = Number(m[2]);
+        if (port > 1024 && pid > 0 && pid !== process.pid) {
+          candidates.push({ port, pid });
+        }
+      }
+    }
+    const probes = await Promise.all(
+      candidates.map(async (c) => ({
+        ...c,
+        matched: await probeIsQuotaPanelSidecar(c.port),
+      })),
+    );
+    for (const item of probes) {
+      if (item.matched) {
+        try {
+          process.kill(item.pid);
+        } catch {
+          // ignore if already exited
+        }
+      }
+    }
+  } catch {
+    // ignore discovery errors
+  }
+}
+
+export function installSidecarPlugin({ target = DEFAULT_SIDECAR_TARGET } = {}) {
+  const resolvedTarget = resolve(target);
+  mkdirSync(resolvedTarget, { recursive: true });
+
+  for (const relPath of SIDECAR_COPY_ENTRIES) {
+    const src = join(REPO_ROOT, relPath);
+    if (!existsSync(src)) {
+      throw new Error(`Missing source file or directory: ${src}`);
+    }
+    const dest = join(resolvedTarget, relPath);
+    mkdirSync(dirname(dest), { recursive: true });
+    cpSync(src, dest, { recursive: true, force: true });
+  }
+
+  const version = readRepoVersion();
+  writeFileSync(
+    join(resolvedTarget, 'installed-version.json'),
+    JSON.stringify(
+      {
+        version,
+        mode: 'sidecar',
+        installedAt: new Date().toISOString(),
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+
+  return {
+    ok: true,
+    version,
+    target: resolvedTarget,
+  };
+}
+
+export async function uninstallSidecarPlugin({ target = DEFAULT_SIDECAR_TARGET } = {}) {
+  const resolvedTarget = resolve(target);
+  if (!existsSync(resolvedTarget)) {
+    return { ok: true, removed: false, target: resolvedTarget };
+  }
+
+  // Delete files first so Antigravity's plugin watcher stops active sidecars cleanly
+  deleteFilesOnlyRecursive(resolvedTarget);
+
+  let lastErr = null;
+  for (let attempt = 0; attempt < 15; attempt += 1) {
+    try {
+      rmSync(resolvedTarget, { recursive: true, force: true });
+      if (!existsSync(resolvedTarget)) {
+        return { ok: true, removed: true, target: resolvedTarget };
+      }
+    } catch (err) {
+      lastErr = err;
+      if (attempt === 2) {
+        await stopOrphanedQuotaPanelSidecars();
+      }
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+
+  if (existsSync(resolvedTarget) && lastErr) {
+    throw lastErr;
+  }
+  return { ok: true, removed: !existsSync(resolvedTarget), target: resolvedTarget };
+}
+
+export function getSidecarPluginStatus({ target = DEFAULT_SIDECAR_TARGET } = {}) {
+  const resolvedTarget = resolve(target);
+  const installed = existsSync(join(resolvedTarget, 'plugin.json'));
+  let version = null;
+  if (installed) {
+    try {
+      const metaPath = join(resolvedTarget, 'installed-version.json');
+      const pkgPath = join(resolvedTarget, 'package.json');
+      if (existsSync(metaPath)) {
+        version = JSON.parse(readFileSync(metaPath, 'utf8')).version || null;
+      } else if (existsSync(pkgPath)) {
+        version = JSON.parse(readFileSync(pkgPath, 'utf8')).version || null;
+      }
+    } catch {
+      version = null;
+    }
+  }
+  return {
+    installed,
+    version,
+    target: resolvedTarget,
+  };
+}
+
 function parseArgs(argv) {
-  let uninstall = false;
-  let target = TARGET_ROOT;
+  let mode = 'install';
+  let target = DEFAULT_SIDECAR_TARGET;
+  let json = false;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    if (arg === '--uninstall' || arg === '-u') {
-      uninstall = true;
+    if (arg === '--uninstall' || arg === '-u' || arg === '--uninstall-sidecar' || arg === 'uninstall') {
+      mode = 'uninstall';
+    } else if (arg === '--sidecar' || arg === '--install' || arg === 'install') {
+      mode = 'install';
+    } else if (arg === '--status' || arg === '--sidecar-status') {
+      mode = 'status';
+    } else if (arg === '--json') {
+      json = true;
     } else if (arg === '--target' && argv[i + 1]) {
       target = resolve(argv[i + 1]);
       i += 1;
+    } else if (arg.startsWith('--target=')) {
+      target = resolve(arg.slice('--target='.length));
     } else if (arg === '--help' || arg === '-h') {
-      console.log(`Usage: node install.mjs [--uninstall] [--target <dir>]
+      console.log(`Usage: node install.mjs [--uninstall] [--status] [--target <dir>] [--json]
+
+Installs or removes the patch-free Antigravity 2.x Native Right Auxiliary Sidecar plugin.
+(Tip: For the top-right semi-ring quota overlay, run: node cli.mjs --top-right)
 
 Options:
-  --uninstall, -u   Remove installed plugin from ${TARGET_ROOT}
+  --uninstall, -u   Remove installed native sidecar plugin from ${DEFAULT_SIDECAR_TARGET}
+  --status          Show native sidecar plugin installation status
   --target <dir>    Override plugin installation directory
+  --json            Print machine-readable JSON output
   --help, -h        Show this help message`);
       process.exit(0);
     }
   }
 
-  return { uninstall, target };
+  return { mode, target, json };
 }
 
-function install(target) {
-  mkdirSync(target, { recursive: true });
-
-  for (const relPath of COPY_ENTRIES) {
-    const src = join(REPO_ROOT, relPath);
-    if (!existsSync(src)) {
-      throw new Error(`Missing source file or directory: ${src}`);
+async function runCli() {
+  const { mode, target, json } = parseArgs(process.argv.slice(2));
+  if (mode === 'status') {
+    const status = getSidecarPluginStatus({ target });
+    if (json) {
+      console.log(JSON.stringify(status, null, 2));
+    } else {
+      console.log(
+        `[agy-quota] Native Sidecar Status: ${status.installed ? `INSTALLED (v${status.version || 'unknown'})` : 'NOT INSTALLED'}`,
+      );
+      console.log(`  plugin dir : ${status.target}`);
     }
-    const dest = join(target, relPath);
-    mkdirSync(dirname(dest), { recursive: true });
-    cpSync(src, dest, { recursive: true, force: true });
-  }
-
-  console.log(`Installed ${PLUGIN_DIR_NAME} to ${target}`);
-}
-
-function uninstall(target) {
-  if (!existsSync(target)) {
-    console.log(`Nothing to uninstall at ${target}`);
     return;
   }
-  rmSync(target, { recursive: true, force: true });
-  console.log(`Removed ${PLUGIN_DIR_NAME} from ${target}`);
+
+  if (mode === 'uninstall') {
+    const res = await uninstallSidecarPlugin({ target });
+    if (json) {
+      console.log(JSON.stringify(res, null, 2));
+    } else if (res.removed) {
+      console.log(`[agy-quota] Removed native right-pane sidecar plugin from ${res.target}`);
+    } else {
+      console.log(`[agy-quota] Nothing to uninstall at ${res.target}`);
+    }
+    return;
+  }
+
+  const res = installSidecarPlugin({ target });
+  if (json) {
+    console.log(JSON.stringify(res, null, 2));
+  } else {
+    console.log(`[agy-quota] Installed native right-pane sidecar plugin (v${res.version}) to ${res.target}`);
+    console.log('  mode       : Patch-free Native Auxiliary Side Pane (app.asar untouched)');
+    console.log('  coexist tip: Run `node cli.mjs --top-right --keep-sidecar` if you also want the top-right HUD');
+  }
 }
 
-const { uninstall: shouldUninstall, target } = parseArgs(process.argv.slice(2));
-if (shouldUninstall) {
-  uninstall(target);
-} else {
-  install(target);
+const isDirectEntry =
+  process.argv[1] && resolve(process.argv[1]).toLowerCase() === __filename.toLowerCase();
+
+if (isDirectEntry) {
+  runCli().catch((err) => {
+    console.error(`[agy-quota] sidecar installer error: ${err instanceof Error ? err.message : String(err)}`);
+    process.exitCode = 1;
+  });
 }

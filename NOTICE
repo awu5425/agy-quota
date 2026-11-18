@@ -1,15 +1,15 @@
 AGY Quota (agy-quota)
 Copyright 2026 AGY Quota Contributors
 
-This project is an independent native Antigravity 2.x UI sidepanel plugin
-("SIDECAR_UI_ENTRYPOINT_AUX_PANE") focused exclusively on Antigravity account
-quota monitoring.
+This project is an independent, 100% original Antigravity 2.x quota monitoring
+suite (Top-Right Semi-Ring HUD, Zero-Copy Companion Overlay, Native Right
+Auxiliary Sidecar, Cross-Platform Terminal CLI & Standalone Web Dashboard).
 
 Upstream Inspiration & Attribution
 ----------------------------------
-The Language Server quota RPC discovery approach, quota pool aggregation model
-(Gemini / Argon / Claude & GPT pools), credit/tier parsing logic, and gauge UI
-concepts are inspired by and adapted with gratitude from:
+The Language Server quota RPC discovery approach, tier-adaptive quota pool
+aggregation model (Gemini / Argon / Claude & GPT pools), credit/tier parsing
+logic, and semi-arc gauge concepts are inspired by and adapted with gratitude from:
 
   Antigravity Panel (https://github.com/n2ns/antigravity-panel)
   Copyright 2024-2025 Datafrog LLC / N2NS Lab (https://n2ns.com)
@@ -22,5 +22,21 @@ Key upstream community contributions that informed the quota model include:
 - @AMDphreak             - Quota pool alignment across Gemini and Claude/GPT models
 - @chonkydonkers         - User tier available credits parsing
 - @iskisraell            - Windows process & port discovery improvements
+
+Companion Ecosystem Acknowledgement
+---------------------------------
+When Antigravity Context Viewer / Antigravity Context Meter is installed on the
+user's machine, agy-quota can optionally attach as a zero-copy companion overlay
+to enhance its quota panel while keeping all upstream files intact:
+
+  Antigravity Context Viewer / Context Meter
+  (https://github.com/elviscjn-cjn/antigravity-context-viewer)
+  Created by @elviscjn-cjn
+  Licensed under the MIT License.
+
+Special thanks to @elviscjn-cjn for designing the open Shadow DOM #panel-quota
+host, static quota pass-through contract, and paired-tag cleanPreloadSource
+installer that enable clean interoperability. agy-quota does not copy, bundle,
+or redistribute any source code from antigravity-context-viewer.
 
 See LICENSE for the full text of the Apache License, Version 2.0.

@@ -1,7 +1,7 @@
 {
   "name": "agy-quota",
-  "version": "1.0.0",
-  "description": "Lightweight native Antigravity 2.x sidepanel plugin and CLI for monitoring account quota pools, 5h/weekly limits, tier credits, and model reset timers.",
+  "version": "1.2.0",
+  "description": "Dual-mode top-right semi-ring quota overlay (standalone HUD or Context Meter companion), optional native right sidecar, terminal CLI/watch, and standalone web dashboard for Antigravity 2.x with EN/ZH i18n, auto theme sync, and GitHub self-update.",
   "type": "module",
   "license": "Apache-2.0",
   "bin": {
@@ -10,11 +10,20 @@
   "scripts": {
     "start": "node cli.mjs",
     "cli": "node cli.mjs",
+    "watch": "node cli.mjs --watch",
     "models": "node cli.mjs --models",
     "dump": "node cli.mjs --json",
     "standalone": "node cli.mjs --standalone --port 4318",
+    "top-right": "node cli.mjs --top-right",
+    "overlay": "node cli.mjs --top-right",
+    "overlay-status": "node cli.mjs --overlay-status",
+    "uninstall-overlay": "node cli.mjs --uninstall-overlay",
+    "sidecar": "node cli.mjs --sidecar",
+    "uninstall-sidecar": "node cli.mjs --uninstall-sidecar",
     "install-plugin": "node install.mjs",
-    "uninstall-plugin": "node install.mjs --uninstall"
+    "uninstall-plugin": "node install.mjs --uninstall",
+    "check-update": "node cli.mjs --check-update",
+    "update": "node cli.mjs --update"
   },
   "repository": {
     "type": "git",
