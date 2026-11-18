@@ -1,7 +1,7 @@
 {
   "name": "agy-quota",
-  "version": "1.2.0",
-  "description": "Dual-mode top-right semi-ring quota overlay (standalone HUD or Context Meter companion), optional native right sidecar, terminal CLI/watch, and standalone web dashboard for Antigravity 2.x with EN/ZH i18n, auto theme sync, and GitHub self-update.",
+  "version": "1.3.0",
+  "description": "Antigravity 2.x quota suite & /agy-quota Agent Skill: dual-mode top-right semi-ring HUD (standalone or Context Meter companion), optional native right sidecar, per-model 90m burn trend, EN/ZH i18n, auto theme sync, GitHub self-update, and CLI/Web tools.",
   "type": "module",
   "license": "Apache-2.0",
   "bin": {
@@ -16,8 +16,12 @@
     "standalone": "node cli.mjs --standalone --port 4318",
     "top-right": "node cli.mjs --top-right",
     "overlay": "node cli.mjs --top-right",
+    "ensure": "node cli.mjs --ensure",
     "overlay-status": "node cli.mjs --overlay-status",
     "uninstall-overlay": "node cli.mjs --uninstall-overlay",
+    "skill": "node cli.mjs --skill",
+    "skill-status": "node cli.mjs --skill-status",
+    "uninstall-skill": "node cli.mjs --uninstall-skill",
     "sidecar": "node cli.mjs --sidecar",
     "uninstall-sidecar": "node cli.mjs --uninstall-sidecar",
     "install-plugin": "node install.mjs",
@@ -25,6 +29,15 @@
     "check-update": "node cli.mjs --check-update",
     "update": "node cli.mjs --update"
   },
+  "keywords": [
+    "antigravity",
+    "agy",
+    "quota",
+    "agent-skills",
+    "skill",
+    "sidecar",
+    "semi-ring"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/awu5425/agy-quota.git"

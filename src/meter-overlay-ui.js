@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const OVERLAY_VERSION = '1.2.0';
+  const OVERLAY_VERSION = '1.3.0';
   const CTL_KEY = '__AGY_QUOTA_OVERLAY_CTL__';
   const SNAP_CACHE_KEY = '__AGY_QUOTA_LAST_SNAPSHOT__';
   const UPDATED_BADGE_KEY = '__AGY_QUOTA_UPDATED_BADGE__';

@@ -1,17 +1,18 @@
-# AGY Quota (`agy-quota` v1.2.0)
+# AGY Quota (`agy-quota` v1.3.0)
 
 [English](./README.md) | 简体中文
 
-一个 **100% 原创、零运行时第三方依赖** 的 **Antigravity 2.x** 账号配额监控套件。底层共用单一核心引擎（`src/quota-core.cjs`）与统一缓存/配置目录（`~/.gemini/antigravity/agy-quota`）。
+一个 **100% 原创、零运行时第三方依赖** 的 **Antigravity 2.x** 账号配额监控套件与 **Agent Skill（`/agy-quota`）**。底层共用单一核心引擎（`src/quota-core.cjs`）与统一缓存/配置目录（`~/.gemini/antigravity/agy-quota`）。
 
-`agy-quota` v1.2.0 在桌面端提供 **两种自由可选（亦可共存）的 UI 形态**，并完整覆盖终端 CLI 与远程网页场景：
+`agy-quota` v1.3.0 在桌面端提供 **两种自由可选（亦可共存）的 UI 形态**、**原生 `/agy-quota` 对话技能（Skill）**，并完整覆盖终端 CLI 与远程网页场景：
 
 1. **右上角半环看板（`--top-right` / `--meter-overlay`，桌面端首选）** —— 支持 CDP 免重启即时热挂载，**双模自适应切换**：
    - **独立右上角模式（零前置依赖）**：在**未安装** `antigravity-context-viewer` 的干净客户端上开箱即用，自动在窗口右上角（智能避让最小化/最大化/关闭三键）挂载精致的 SVG 进度环胶囊按钮（`#agy-quota-standalone-hud`），点击弹出 `476px` 四层 `1×2 / 1×3` 自适应半环看板。
    - **Context Meter 伴生增强模式**：当检测到已安装 **[Antigravity Context Meter](https://github.com/elviscjn-cjn/antigravity-context-viewer)**（`#ag-context-meter`）时，自动销毁/退让独立徽章（确保右上角绝无双图标冲突！），无损接管 `#panel-quota` 弹出层、合并单次 RPC 零重复轮询，且 **100% 跨在线升级自动留存与重挂载**。
 2. **原生右侧栏面板（`node install.mjs` / `--sidecar`）** —— 基于官方 `SIDECAR_UI_ENTRYPOINT_AUX_PANE` 机制挂载至右侧辅助栏（Auxiliary Side Pane），**零 `app.asar` 补丁**；既可单独使用，也可通过 `--top-right --keep-sidecar` 与右上角看板同时保留。
-3. **终端 CLI 与实时监控（`agy-quota` / `--watch [sec]` / `--models` / `--oauth`）** —— 终端彩色看板、定时清屏刷新、基础模型合并去重明细，以及无桌面/无本地 Language Server 环境下的 Cloud Code OAuth 直连兜底。
-4. **独立 Web 预览服务（`--standalone`）** —— 本地或远程无头服务器（支持 `--host 0.0.0.0`）启动轻量 HTTP 服务，在任意浏览器呈现同款四层半环看板。
+3. **自包含 Agent Skill（`/agy-quota` / `node cli.mjs --skill` / `npx skills add`）** —— 支持在对话中输入 `/agy-quota` 或直接用自然语言查询实时配额余量、评估跑大模型/Swarm 多智能体任务的额度预算，以及一句话安装/修复/切换桌面配额面板。
+4. **终端 CLI 与实时监控（`agy-quota` / `--watch [sec]` / `--models` / `--oauth`）** —— 终端彩色看板、定时清屏刷新、基础模型合并去重明细，以及无桌面/无本地 Language Server 环境下的 Cloud Code OAuth 直连兜底。
+5. **独立 Web 预览服务（`--standalone`）** —— 本地或远程无头服务器（支持 `--host 0.0.0.0`）启动轻量 HTTP 服务，在任意浏览器呈现同款四层半环看板。
 
 ---
 
@@ -22,15 +23,19 @@
 | **1A. 右上角看板（独立徽章模式）** | `node cli.mjs --top-right` | **否**（未装时自动挂出右上角独立圆环） | 仅在 `dist/preload.js` 写入成对引导标记 | **否** | 纯净 Antigravity 客户端，一步挂出右上角半环额度弹窗 |
 | **1B. 右上角看板（伴生融合模式）** | `node cli.mjs --top-right` *(等价 `--meter-overlay`)* | 自动检测 `#ag-context-meter` | 仅在 `dist/preload.js` 写入成对引导标记 | **否** | 已装 Context Meter 用户，合一接管 `#panel-quota` 且单次 RPC 零重复轮询 |
 | **2. 原生右侧栏面板（Sidecar）** | `node install.mjs` *(或 `node cli.mjs --sidecar`)* | **否** | **否（零 ASAR 补丁）** | 是（`sidecar_sdk`） | 偏好完全不触碰 `app.asar` 的官方右侧辅助栏（加 `--keep-sidecar` 可与右上角共存） |
-| **3. 终端 CLI / Watch** | `node cli.mjs` / `node cli.mjs --watch 15` | 否 | 否 | 否 | 终端速查、`agy` 命令行会话、远程无桌面 Linux 服务器（`--oauth`） |
-| **4. 独立网页预览（Standalone）** | `node cli.mjs --standalone --port 4318` | 否 | 否 | 按需 HTTP 服务 | 本地浏览器独立打开或远程 SSH 端口转发查看 |
+| **3. Agent Skill（`/agy-quota`）** | `node cli.mjs --skill` *(或 `npx skills add awu5425/agy-quota`)* | **否** | **否** | **否** | 对话内查额度、大模型/Swarm 预算评估、一句话安装/自愈面板 |
+| **4. 终端 CLI / Watch** | `node cli.mjs` / `node cli.mjs --watch 15` | 否 | 否 | 否 | 终端速查、`agy` 命令行会话、远程无桌面 Linux 服务器（`--oauth`） |
+| **5. 独立网页预览（Standalone）** | `node cli.mjs --standalone --port 4318` | 否 | 否 | 按需 HTTP 服务 | 本地浏览器独立打开或远程 SSH 端口转发查看 |
 
-关于双模自适应右上角挂载、单次 RPC 拦截去重、ASAR 手术刀改写、GitHub 在线校验热升级及 L0~L4 连接发现链的技术细节，请参阅：[架构说明 (docs/ARCHITECTURE.md)](./docs/ARCHITECTURE.md)。
+关于双模自适应右上角挂载、Agent Skill 双目录自举架构、单次 RPC 拦截去重、ASAR 手术刀改写、GitHub 在线校验热升级及 L0~L4 连接发现链的技术细节，请参阅：[架构说明 (docs/ARCHITECTURE.md)](./docs/ARCHITECTURE.md)。
 
 ---
 
-## v1.2.0 全新升级与核心特性
+## v1.3.0 全新升级与核心特性
 
+- **原生 `/agy-quota` Agent Skill 双形态自包含封装（`SKILL.md` + `skills/agy-quota/` + `node cli.mjs --skill`）**：
+  - 同时兼容三种主流安装方式：`node cli.mjs --skill`（离线完整安装至 `~/.gemini/config/skills/agy-quota`，零常驻后台进程）、`npx skills add awu5425/agy-quota`（子目录单独分发时首次调用自动从 GitHub 拉取并通过 `node --check` 语法校验自举 `./runtime/`）、以及直接 `git clone` 至 `skills/agy-quota` 或随 `plugin.json` 原生插件自动加载。
+  - 让 AI Agent 可随时按需读取脱敏实时配额池、在启动耗时任务或 Swarm 前给出选模与节奏建议，或直接代你执行 `--top-right` / `--ensure` / `--update`。
 - **右上角双模无感自适应（`standalone` ↔ `companion`）**：
   - 未装 `context-viewer` 时自动挂载独立顶栏小圆环徽章与 `476px` 弹窗；一旦检测到 `#ag-context-meter` 出现，`<300ms` 内自动销毁独立徽章并无缝切入 `#panel-quota` 伴生模式，彻底杜绝右上角双图标。
 - **中英双语实时切换（`中 / EN`）**：
@@ -38,8 +43,8 @@
 - **主题跟随系统/宿主 + 三态切换（`Auto / Dark / Light`）**：
   - 默认 `Auto`（自动跟随）：实时监听 Antigravity 宿主页面类名、`data-theme`、背景明度以及系统 `prefers-color-scheme: dark` 事件，明暗切换毫秒级同步 `--qp-*` 亮暗色板；同时支持在顶栏手动锁定 `Dark` 或 `Light`（`localStorage['agy_quota_theme']`）。
 - **GitHub 在线检查与免重启热升级（`--check-update` / `--update` 及面板自动更新开关）**：
-  - 看板底部新增单行版本栏 `.qp-footer-bar`：展示 `AGY Quota v1.2.0`、一键检查/立即更新按钮与 **`自动更新`（`Auto-update`）** 开关（配置持久化于 `~/.gemini/antigravity/agy-quota/settings.json`）。
-  - 支持环境变量及本机代理自动识别，双通道查询 GitHub `releases/latest` 与 `main/package.json`；下载至临时 staging 目录全量通过 JS 语法守卫后原子替换已激活的右上角/右侧栏运行时，并支持前端 UI 免重启即时热替换。
+  - 看板底部新增单行版本栏 `.qp-footer-bar`：展示 `AGY Quota v1.3.0`、一键检查/立即更新按钮与 **`自动更新`（`Auto-update`）** 开关（配置持久化于 `~/.gemini/antigravity/agy-quota/settings.json`）。
+  - 支持环境变量及本机代理自动识别，双通道查询 GitHub `releases/latest` 与 `main/package.json`；下载至临时 staging 目录全量通过 JS 语法守卫后原子替换已激活的右上角/右侧栏/Skill 运行时，并支持前端 UI 免重启即时热替换。
 - **476px 四层精简自适应半环看板（`1×2 Ultra` / `1×3 Pro`）**：
   1. **紧凑顶栏 & 单行账号条**：`半弧 | 圆环`（`Arc | Ring`）切换、`中 / EN`、`Auto / Dark / Light` 主题键、刷新倒计时、邮箱点击高斯模糊打码，以及精准解析的 `Google AI Pro` / `Google AI Ultra` 徽章。
   2. **按服务端真实配额组动态 `1×2` / `1×3` 等宽半环网格 + 池内家族微标**：严格依据 `RetrieveUserQuotaSummary` 与模型限额判定——在 Google AI Ultra（Argon 与 Gemini 共用 `gemini-5h` / `gemini-weekly`）下渲染 **`1×2` 双环卡片**（`Gemini` · `Claude / GPT`），在 Google AI Pro（存在独立 `gemini-argon-wtu-weekly` 等 Argon 桶）下自动切换 **`1×3` 三环卡片**（`Gemini` · `Argon` · `Claude / GPT`）；每张卡片标题下方附带精炼模型家族微标（如 `Carbon · Argon · Hydrogen · 3.8 Flash`、`Sonnet 4.6 · Opus 4.6 · GPT-OSS`），配合 210° 半圆弧仪表、当前会话模型池智能映射高亮、`pp/h` 速率与周额度进度条。
@@ -54,16 +59,24 @@
 
 ```text
 agy-quota/
-├── package.json                     # v1.2.0 包配置（Apache-2.0，零运行时第三方依赖）
-├── cli.mjs                          # 统一 CLI 入口（--top-right、--sidecar、--watch、--check-update、--update、--standalone）
-├── install.mjs                      # 零补丁原生右侧栏 Sidecar 安装/卸载脚本
-├── plugin.json                      # Antigravity 2.x 原生插件清单
+├── package.json                     # v1.3.0 包配置（Apache-2.0，零运行时第三方依赖）
+├── cli.mjs                          # 统一 CLI 入口（--top-right、--sidecar、--skill、--watch、--update、--standalone）
+├── install.mjs                      # 零补丁原生右侧栏 Sidecar 与自包含 Agent Skill 安装/卸载器
+├── plugin.json                      # Antigravity 2.x 原生插件清单（同时包含 Sidecar 与 /agy-quota Skill）
+├── SKILL.md                         # 根目录 Agent Skill 定义（兼容直接 git clone 至 skills/ 目录）
+├── scripts/
+│   └── agy-quota.mjs                # 支持离线路由与首次运行自动安全自举的 Skill 执行器
+├── skills/
+│   └── agy-quota/                   # 标准插件规范与 `npx skills add` 分发目录
+│       ├── SKILL.md
+│       └── scripts/
+│           └── agy-quota.mjs
 ├── README.md                        # English README
 ├── README.zh-CN.md                  # 简体中文文档
 ├── LICENSE                          # Apache License 2.0 协议
 ├── NOTICE                           # 上游项目归属声明
 ├── docs/
-│   └── ARCHITECTURE.md              # 双模右上角挂载、ASAR 手术刀改写、在线热更新与 RPC 架构文档
+│   └── ARCHITECTURE.md              # 双模右上角挂载、Agent Skill、ASAR 手术刀改写与 RPC 架构文档
 ├── assets/
 │   └── logo.svg                     # 插件图标
 ├── src/
@@ -127,19 +140,40 @@ node install.mjs --uninstall
 # （等价命令：node cli.mjs --uninstall-sidecar）
 ```
 
-### 3. GitHub 在线检查更新与一键热升级
+### 3. Agent Skill 形态（`/agy-quota`，对话即查额度 & 一句话装面板）
+
+支持将 `agy-quota` 安装为自包含的全局 Agent Skill（默认位于 `~/.gemini/config/skills/agy-quota`，**零常驻后台进程**），任选以下三种方式之一即可：
+
+```bash
+# 方式 A：从本地仓库一键安装完整离线 Skill 运行时
+node cli.mjs --skill
+node cli.mjs --skill-status
+
+# 方式 B：通过社区通用 skills CLI 一行安装（首次触发时自动拉取并语法校验 runtime/）
+npx skills add awu5425/agy-quota
+
+# 方式 C：直接 Git Clone 到 Antigravity 全局技能目录
+git clone https://github.com/awu5425/agy-quota.git ~/.gemini/config/skills/agy-quota
+```
+
+安装后即可在聊天框输入 `/agy-quota` 或直接用自然语言对话：
+- `/agy-quota` —— *“帮我看下现在还剩多少配额、什么时候重置、近 90 分钟哪个模型消耗最多”*
+- *“先查一下我的 Argon 和 Claude 额度，评估够不够开 4 个 Swarm 并发跑重构”*
+- *“/agy-quota 帮我把右上角半环额度看板装上（或客户端升级后帮我自愈恢复）”*
+
+### 4. GitHub 在线检查更新与一键热升级
 
 ```bash
 # 检查 GitHub 是否有新版本发布
 node cli.mjs --check-update
 
-# 安全下载新版本、执行 staging 语法守卫校验并原子热更新已安装的右上角/右侧栏运行时
+# 安全下载新版本、执行 staging 语法守卫校验并原子热更新已安装的右上角/右侧栏/Skill 运行时
 node cli.mjs --update
 ```
 
 *（亦可直接在面板底部的版本栏开启 **`自动更新`** 开关或点击检查/立即更新。）*
 
-### 4. 终端 CLI、实时刷新与独立网页预览
+### 5. 终端 CLI、实时刷新与独立网页预览
 
 ```bash
 # 默认终端彩色配额看板（2 池 Ultra / 3 池 Pro 自适应、5h/周窗口摘要、订阅 Credits）

@@ -1,10 +1,10 @@
-# 架构说明 (Architecture — v1.2.0)
+# 架构说明 (Architecture — v1.3.0)
 
-本文档说明 **AGY Quota (`agy-quota` v1.2.0)** 的共享核心引擎、双模自适应右上角挂载架构（Standalone Top-Right HUD & Zero-Copy Companion Overlay）、原生右侧栏可选共存机制、中英双语与宿主主题跟随系统、GitHub 在线热升级链路，以及 L0~L4 五级连接发现链。
+本文档说明 **AGY Quota (`agy-quota` v1.3.0)** 的共享核心引擎、双模自适应右上角挂载架构（Standalone Top-Right HUD & Zero-Copy Companion Overlay）、自包含 Agent Skill（`/agy-quota`）双布局与自举机制、原生右侧栏可选共存机制、中英双语与宿主主题跟随系统、GitHub 在线热升级链路，以及 L0~L4 五级连接发现链。
 
 ---
 
-## 1. 整体架构与桌面双 UI + CLI/Web 四大形态
+## 1. 整体架构与桌面双 UI + Skill + CLI/Web 五大形态
 
 `agy-quota` 采用 **100% 纯原创 Apache-2.0 代码** 与 **零运行时第三方依赖** 设计。所有运行形态统一复用 `src/quota-core.cjs`，并将时序历史与偏好配置收敛至单一共享目录 `~/.gemini/antigravity/agy-quota/`（含 `quota_history.json`、`last_ls_conn.json`、`settings.json` 与 `backups/`）：
 
@@ -14,10 +14,15 @@
      - **Mode B — 独立右上角模式（`standalone`）**：在未安装 `antigravity-context-viewer` 的干净客户端上，冷启动确认无 `#ag-context-meter` 后自动创建开放式 Shadow DOM 宿主 `<div id="agy-quota-standalone-hud">`，优先停靠宿主顶栏操作区或固定于右上角安全坐标（`right >= 120px`，避开窗口最小化/最大化/关闭三键且保留 `-webkit-app-region: no-drag`），渲染 SVG 进度环胶囊徽章与可展开 `476px` 四层半环弹窗；一旦后续检测到 `#ag-context-meter` 挂载，`<300ms` 内自动销毁独立 HUD 无感切回 `companion` 模式，彻底杜绝双图标冲突。
    - 默认自动卸载原生右侧栏以避免常驻双进程；若显式传入 `--keep-sidecar`，则同时保留/同步原生右侧栏插件实现双端共存。
 2. **原生右侧栏面板模式（`install.mjs` / `cli.mjs --sidecar`）**
-   - 基于 Antigravity 2.x 官方 `~/.gemini/config/plugins/agy-quota` 与 `SIDECAR_UI_ENTRYPOINT_AUX_PANE` 机制，**零 `app.asar` 改动**，完整包含 `package.json`、`src/quota-core.cjs` 与 `sidecars/quota_panel/*` 自包含运行时。
-3. **终端 CLI 与实时监控模式（`cli.mjs` / `--watch [sec]` / `--models` / `--oauth` / `--json`）**
+   - 基于 Antigravity 2.x 官方 `~/.gemini/config/plugins/agy-quota` 与 `SIDECAR_UI_ENTRYPOINT_AUX_PANE` 机制，**零 `app.asar` 改动**，完整包含 `package.json`、`src/quota-core.cjs`、`skills/agy-quota/*` 与 `sidecars/quota_panel/*` 自包含运行时。
+3. **自包含 Agent Skill 模式（`/agy-quota` / `cli.mjs --skill` / `npx skills add`）**
+   - 同时在仓库根目录（`SKILL.md` + `scripts/agy-quota.mjs`）与标准插件子目录（`skills/agy-quota/SKILL.md` + `skills/agy-quota/scripts/agy-quota.mjs`）提供一致的技能入口，零常驻进程，按需由 Agent 调用执行：
+     - `node cli.mjs --skill` 将完整离线运行时预打包进 `~/.gemini/config/skills/agy-quota/runtime/`，本地 `0ms` 离线启动；
+     - 通过 `npx skills add awu5425/agy-quota` 仅提取 `skills/agy-quota/` 子目录安装时，`scripts/agy-quota.mjs` 首次执行会自动从 GitHub 下载核心文件至临时 staging 目录、逐一执行 `node --check` 语法校验后原子落盘至 `./runtime/`；
+     - 直接 `git clone` 至 `~/.gemini/config/skills/agy-quota` 或通过 `plugin.json` 安装插件时，直接解析相邻 `cli.mjs` 与 `src/quota-core.cjs`。
+4. **终端 CLI 与实时监控模式（`cli.mjs` / `--watch [sec]` / `--models` / `--oauth` / `--json`）**
    - 支持单次彩色终端看板、`--watch` 定时刷新、`--models` 基础模型档位归并去重，以及无桌面环境下的 Cloud Code OAuth 直连兜底。
-4. **Standalone 独立网页预览（`--standalone [--host] [--port]`）**
+5. **Standalone 独立网页预览（`--standalone [--host] [--port]`）**
    - 内置轻量 HTTP 服务与 `/api/quota` + `/api/update/*` 路由，在任意本地或远程浏览器渲染完整的双语、三态主题四层半环面板。
 
 ---
@@ -58,7 +63,7 @@
 2. **双通道版本探测（`checkSelfUpdate` / `--check-update`）**：自动读取 `HTTPS_PROXY` / `HTTP_PROXY` 及本机 `modules.json` 代理配置；优先查询 `https://api.github.com/repos/<repo>/releases/latest`，若未发布 Release（404）或受限则无缝回退读取 `https://raw.githubusercontent.com/<repo>/main/package.json`，执行 semver 比对与 6 小时非强制检查缓存。
 3. **Staging 语法守卫与原子热替换（`applySelfUpdate` / `--update`）**：
    - 将远端核心运行时文件下载至临时 staging 目录，对全部 `.js/.cjs/.mjs` 执行严格语法完整性校验（支持 `dryRun: true` 演练），任一文件异常立即中止并清理临时目录；
-   - 校验通过后原子同步至已激活的 `<StateDir>/agy-quota-overlay/`（更新 `installed-version.json`）及已安装的 `~/.gemini/config/plugins/agy-quota/`（绝不覆盖开发者的 Git 源码工作区），并返回最新 `overlayUiCode` 供前端免重启即时热替换。
+   - 校验通过后原子同步至已激活的 `<StateDir>/agy-quota-overlay/`（更新 `installed-version.json`）、已安装的 `~/.gemini/config/plugins/agy-quota/` 以及已安装的 `~/.gemini/config/skills/agy-quota/runtime/`（绝不覆盖开发者的 Git 源码工作区），并返回最新 `overlayUiCode` 供前端免重启即时热替换。
 4. **Web / Sidecar 更新接口**：内置 `GET /api/update/status`、`POST /api/update/check`、`POST /api/update/prefs` 与 `POST /api/update/apply` 路由。
 
 ---

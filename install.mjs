@@ -11,16 +11,45 @@ export const PLUGIN_DIR_NAME = 'agy-quota';
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = resolve(dirname(__filename));
 export const DEFAULT_SIDECAR_TARGET = join(homedir(), '.gemini', 'config', 'plugins', PLUGIN_DIR_NAME);
+export const DEFAULT_SKILL_TARGET = join(homedir(), '.gemini', 'config', 'skills', PLUGIN_DIR_NAME);
 
 export const SIDECAR_COPY_ENTRIES = [
   'package.json',
   'plugin.json',
+  'cli.mjs',
+  'install.mjs',
   'README.md',
   'README.zh-CN.md',
   'LICENSE',
   'NOTICE',
   'assets',
+  'skills',
   join('src', 'quota-core.cjs'),
+  join('src', 'overlay-preload.cjs'),
+  join('src', 'meter-overlay-ui.js'),
+  join('src', 'overlay-installer.mjs'),
+  join('src', 'auto-ensure-hook.cjs'),
+  join('sidecars', 'quota_panel', 'package.json'),
+  join('sidecars', 'quota_panel', 'sidecar.json'),
+  join('sidecars', 'quota_panel', 'main.mjs'),
+  join('sidecars', 'quota_panel', 'index.html'),
+  join('sidecars', 'quota_panel', 'styles.css'),
+  join('sidecars', 'quota_panel', 'app.js'),
+];
+
+export const SKILL_RUNTIME_ENTRIES = [
+  'package.json',
+  'plugin.json',
+  'cli.mjs',
+  'install.mjs',
+  'LICENSE',
+  'NOTICE',
+  'assets',
+  join('src', 'quota-core.cjs'),
+  join('src', 'overlay-preload.cjs'),
+  join('src', 'meter-overlay-ui.js'),
+  join('src', 'overlay-installer.mjs'),
+  join('src', 'auto-ensure-hook.cjs'),
   join('sidecars', 'quota_panel', 'package.json'),
   join('sidecars', 'quota_panel', 'sidecar.json'),
   join('sidecars', 'quota_panel', 'main.mjs'),
@@ -32,9 +61,9 @@ export const SIDECAR_COPY_ENTRIES = [
 function readRepoVersion() {
   try {
     const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
-    return pkg.version || '1.2.0';
+    return pkg.version || '1.3.0';
   } catch {
-    return '1.2.0';
+    return '1.3.0';
   }
 }
 
@@ -209,9 +238,98 @@ export function getSidecarPluginStatus({ target = DEFAULT_SIDECAR_TARGET } = {})
   };
 }
 
+export function installSkillBundle({ target = DEFAULT_SKILL_TARGET } = {}) {
+  const resolvedTarget = resolve(target);
+  mkdirSync(resolvedTarget, { recursive: true });
+
+  const skillMdSrc = join(REPO_ROOT, 'skills', 'agy-quota', 'SKILL.md');
+  const runnerSrc = join(REPO_ROOT, 'skills', 'agy-quota', 'scripts', 'agy-quota.mjs');
+  if (!existsSync(skillMdSrc) || !existsSync(runnerSrc)) {
+    throw new Error('Missing skills/agy-quota/{SKILL.md,scripts/agy-quota.mjs} in repository');
+  }
+
+  cpSync(skillMdSrc, join(resolvedTarget, 'SKILL.md'), { force: true });
+  mkdirSync(join(resolvedTarget, 'scripts'), { recursive: true });
+  cpSync(runnerSrc, join(resolvedTarget, 'scripts', 'agy-quota.mjs'), { force: true });
+
+  const runtimeRoot = join(resolvedTarget, 'runtime');
+  mkdirSync(runtimeRoot, { recursive: true });
+  for (const relPath of SKILL_RUNTIME_ENTRIES) {
+    const src = join(REPO_ROOT, relPath);
+    if (!existsSync(src)) {
+      throw new Error(`Missing source file or directory for skill runtime: ${src}`);
+    }
+    const dest = join(runtimeRoot, relPath);
+    mkdirSync(dirname(dest), { recursive: true });
+    cpSync(src, dest, { recursive: true, force: true });
+  }
+
+  const version = readRepoVersion();
+  const versionMeta = JSON.stringify(
+    {
+      version,
+      mode: 'skill',
+      installedAt: new Date().toISOString(),
+    },
+    null,
+    2,
+  );
+  writeFileSync(join(resolvedTarget, 'installed-version.json'), versionMeta, 'utf8');
+  writeFileSync(join(runtimeRoot, 'installed-version.json'), versionMeta, 'utf8');
+
+  return {
+    ok: true,
+    version,
+    target: resolvedTarget,
+    runtimeRoot,
+  };
+}
+
+export function uninstallSkillBundle({ target = DEFAULT_SKILL_TARGET } = {}) {
+  const resolvedTarget = resolve(target);
+  if (!existsSync(resolvedTarget)) {
+    return { ok: true, removed: false, target: resolvedTarget };
+  }
+  rmSync(resolvedTarget, { recursive: true, force: true });
+  return { ok: true, removed: !existsSync(resolvedTarget), target: resolvedTarget };
+}
+
+export function getSkillStatus({ target = DEFAULT_SKILL_TARGET } = {}) {
+  const resolvedTarget = resolve(target);
+  const hasSkillMd = existsSync(join(resolvedTarget, 'SKILL.md'));
+  const hasRunner = existsSync(join(resolvedTarget, 'scripts', 'agy-quota.mjs'));
+  const hasEmbeddedRuntime = existsSync(join(resolvedTarget, 'runtime', 'cli.mjs'));
+  const hasDirectCli = existsSync(join(resolvedTarget, 'cli.mjs'));
+  const installed = hasSkillMd && hasRunner;
+  let version = null;
+  if (installed) {
+    for (const candidate of [
+      join(resolvedTarget, 'installed-version.json'),
+      join(resolvedTarget, 'runtime', 'installed-version.json'),
+      join(resolvedTarget, 'runtime', 'package.json'),
+      join(resolvedTarget, 'package.json'),
+    ]) {
+      if (existsSync(candidate)) {
+        try {
+          version = JSON.parse(readFileSync(candidate, 'utf8')).version || null;
+          if (version) break;
+        } catch {
+          // ignore malformed version file
+        }
+      }
+    }
+  }
+  return {
+    installed,
+    selfContained: hasEmbeddedRuntime || hasDirectCli,
+    version,
+    target: resolvedTarget,
+  };
+}
+
 function parseArgs(argv) {
   let mode = 'install';
-  let target = DEFAULT_SIDECAR_TARGET;
+  let target = null;
   let json = false;
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -222,6 +340,12 @@ function parseArgs(argv) {
       mode = 'install';
     } else if (arg === '--status' || arg === '--sidecar-status') {
       mode = 'status';
+    } else if (arg === '--skill' || arg === '--install-skill') {
+      mode = 'install-skill';
+    } else if (arg === '--uninstall-skill') {
+      mode = 'uninstall-skill';
+    } else if (arg === '--skill-status') {
+      mode = 'skill-status';
     } else if (arg === '--json') {
       json = true;
     } else if (arg === '--target' && argv[i + 1]) {
@@ -230,26 +354,72 @@ function parseArgs(argv) {
     } else if (arg.startsWith('--target=')) {
       target = resolve(arg.slice('--target='.length));
     } else if (arg === '--help' || arg === '-h') {
-      console.log(`Usage: node install.mjs [--uninstall] [--status] [--target <dir>] [--json]
+      console.log(`Usage: node install.mjs [options]
 
-Installs or removes the patch-free Antigravity 2.x Native Right Auxiliary Sidecar plugin.
+Installs or removes the AGY Quota Native Sidecar plugin or Standalone Agent Skill (/agy-quota).
 (Tip: For the top-right semi-ring quota overlay, run: node cli.mjs --top-right)
 
 Options:
-  --uninstall, -u   Remove installed native sidecar plugin from ${DEFAULT_SIDECAR_TARGET}
-  --status          Show native sidecar plugin installation status
-  --target <dir>    Override plugin installation directory
-  --json            Print machine-readable JSON output
-  --help, -h        Show this help message`);
+  --sidecar              Install native right-pane plugin to ${DEFAULT_SIDECAR_TARGET} (default)
+  --uninstall, -u        Remove native sidecar plugin
+  --status               Show native sidecar plugin status
+  --skill                Install self-contained /agy-quota skill to ${DEFAULT_SKILL_TARGET}
+  --uninstall-skill      Remove standalone /agy-quota skill
+  --skill-status         Show standalone /agy-quota skill status
+  --target <dir>         Override target installation directory
+  --json                 Print machine-readable JSON output
+  --help, -h             Show this help message`);
       process.exit(0);
     }
   }
 
-  return { mode, target, json };
+  const defaultTarget = mode.includes('skill') ? DEFAULT_SKILL_TARGET : DEFAULT_SIDECAR_TARGET;
+  return { mode, target: target || defaultTarget, json };
 }
 
 async function runCli() {
   const { mode, target, json } = parseArgs(process.argv.slice(2));
+  if (mode === 'skill-status') {
+    const status = getSkillStatus({ target });
+    if (json) {
+      console.log(JSON.stringify(status, null, 2));
+    } else {
+      console.log(
+        `[agy-quota] Agent Skill Status: ${
+          status.installed
+            ? `INSTALLED (v${status.version || 'unknown'}, self-contained: ${status.selfContained})`
+            : 'NOT INSTALLED'
+        }`,
+      );
+      console.log(`  skill dir  : ${status.target}`);
+    }
+    return;
+  }
+
+  if (mode === 'uninstall-skill') {
+    const res = uninstallSkillBundle({ target });
+    if (json) {
+      console.log(JSON.stringify(res, null, 2));
+    } else if (res.removed) {
+      console.log(`[agy-quota] Removed /agy-quota skill from ${res.target}`);
+    } else {
+      console.log(`[agy-quota] Nothing to uninstall at ${res.target}`);
+    }
+    return;
+  }
+
+  if (mode === 'install-skill') {
+    const res = installSkillBundle({ target });
+    if (json) {
+      console.log(JSON.stringify(res, null, 2));
+    } else {
+      console.log(`[agy-quota] Installed self-contained /agy-quota skill (v${res.version}) to ${res.target}`);
+      console.log('  slash cmd  : /agy-quota (available from your next agent turn)');
+      console.log('  runtime    : embedded offline bundle (zero resident background process)');
+    }
+    return;
+  }
+
   if (mode === 'status') {
     const status = getSidecarPluginStatus({ target });
     if (json) {

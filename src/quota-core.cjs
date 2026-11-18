@@ -3252,10 +3252,10 @@ async function runCliReport(argv = []) {
 }
 
 // ---------------------------------------------------------------------------
-// Self-Update & Online Hot-Upgrade Engine (v1.2.0)
+// Self-Update & Online Hot-Upgrade Engine (v1.3.0)
 // ---------------------------------------------------------------------------
 
-const QUOTA_CORE_VERSION = '1.2.0';
+const QUOTA_CORE_VERSION = '1.3.0';
 const DEFAULT_UPDATE_REPO = 'awu5425/agy-quota';
 const UPDATE_CHECK_TTL_MS = 6 * 60 * 60 * 1000;
 const UPDATE_HTTP_TIMEOUT_MS = 12_000;
@@ -4269,7 +4269,14 @@ function resolveRuntimeUpdateTargets(opts = {}) {
     ? resolve(String(opts.pluginDir))
     : join(homedir(), '.gemini', 'config', 'plugins', 'agy-quota');
 
-  return { overlayDirs, pluginDir };
+  const skillBaseDir = opts.skillDir
+    ? resolve(String(opts.skillDir))
+    : join(homedir(), '.gemini', 'config', 'skills', 'agy-quota');
+  const skillRuntimeDir = existsSync(join(skillBaseDir, 'runtime', 'package.json'))
+    ? join(skillBaseDir, 'runtime')
+    : skillBaseDir;
+
+  return { overlayDirs, pluginDir, skillBaseDir, skillRuntimeDir };
 }
 
 async function applySelfUpdate(opts = {}) {
@@ -4331,17 +4338,26 @@ async function applySelfUpdate(opts = {}) {
     }
 
     const overlayUiCode = stagedContents.get('src/meter-overlay-ui.js').content;
-    const { overlayDirs, pluginDir } = resolveRuntimeUpdateTargets(options);
+    const { overlayDirs, pluginDir, skillBaseDir, skillRuntimeDir } =
+      resolveRuntimeUpdateTargets(options);
 
     const activeOverlayDirs = overlayDirs.filter(
       (dir) => existsSync(dir) && !isProtectedDevWorkspace(dir),
     );
     const activePluginDir =
       existsSync(pluginDir) && !isProtectedDevWorkspace(pluginDir) ? pluginDir : null;
+    const activeSkillRuntimeDir =
+      existsSync(skillRuntimeDir) &&
+      existsSync(join(skillRuntimeDir, 'src', 'quota-core.cjs')) &&
+      !isProtectedDevWorkspace(skillBaseDir) &&
+      !isProtectedDevWorkspace(skillRuntimeDir)
+        ? skillRuntimeDir
+        : null;
 
     const wouldUpdateTargets = [
       ...activeOverlayDirs,
       ...(activePluginDir ? [activePluginDir] : []),
+      ...(activeSkillRuntimeDir ? [activeSkillRuntimeDir] : []),
     ];
 
     if (dryRun) {
@@ -4396,6 +4412,25 @@ async function applySelfUpdate(opts = {}) {
       }
       atomicWriteFileSync(join(activePluginDir, 'installed-version.json'), versionRecord);
       updatedTargets.push(activePluginDir);
+    }
+
+    if (activeSkillRuntimeDir) {
+      for (const relPath of RUNTIME_UPDATE_MANIFEST) {
+        const stagedEntry = stagedContents.get(relPath);
+        const destPath = join(activeSkillRuntimeDir, ...relPath.split('/'));
+        atomicWriteFileSync(destPath, stagedEntry.content);
+      }
+      const skillPluginManifestPath = join(activeSkillRuntimeDir, 'plugin.json');
+      const skillPluginManifest = readJsonSafe(skillPluginManifestPath);
+      if (skillPluginManifest && typeof skillPluginManifest === 'object') {
+        skillPluginManifest.version = updatedVersion;
+        atomicWriteFileSync(
+          skillPluginManifestPath,
+          `${JSON.stringify(skillPluginManifest, null, 2)}\n`,
+        );
+      }
+      atomicWriteFileSync(join(activeSkillRuntimeDir, 'installed-version.json'), versionRecord);
+      updatedTargets.push(activeSkillRuntimeDir);
     }
 
     if (!options.noPersist) {

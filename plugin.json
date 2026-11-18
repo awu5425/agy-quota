@@ -1,13 +1,14 @@
 {
   "name": "agy-quota",
   "displayName": "AGY Quota",
-  "version": "1.0.0",
-  "description": "Real-time Antigravity account quota, weekly limits, subscription credits, and per-model reset monitor in the auxiliary side panel.",
+  "version": "1.3.0",
+  "description": "Real-time Antigravity account quota suite (/agy-quota skill + semi-ring dashboard): tier-adaptive pools, 5h & weekly resets, 90-minute per-model burn rates, and subscription credits.",
   "homepage": "https://github.com/awu5425/agy-quota",
   "repository": "https://github.com/awu5425/agy-quota",
   "logo": "assets/logo.svg",
   "suggestedPrompts": [
-    "Show my current Antigravity account quota and reset times",
-    "Check remaining Gemini, Argon, and Claude/GPT quota pools"
+    "Check my current Antigravity account quota, reset times, and 90-minute per-model burn rate",
+    "Install the AGY Quota top-right semi-ring dashboard on my desktop",
+    "Which model pool has the most remaining budget for a large coding task right now?"
   ]
 }

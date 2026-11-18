@@ -14,15 +14,15 @@ const OVERLAY_SCRIPT = join(REPO_ROOT, 'src', 'overlay-installer.mjs');
 function getPackageVersion() {
   try {
     const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
-    return pkg.version || '1.2.0';
+    return pkg.version || '1.3.0';
   } catch {
-    return '1.2.0';
+    return '1.3.0';
   }
 }
 
 function buildHelpText() {
   const ver = getPackageVersion();
-  return `agy-quota v${ver} - Antigravity 2.x Quota Suite (Top-Right HUD, Native Sidecar, CLI & Web UI)
+  return `agy-quota v${ver} - Antigravity 2.x Quota Suite (Top-Right HUD, Agent Skill, Sidecar, CLI & Web UI)
 
 Usage:
   agy-quota [options]                    Show colored quota dashboard in terminal (default)
@@ -45,8 +45,14 @@ Usage:
   agy-quota --overlay-status [--json]    Inspect ASAR hook, runtime bundle, backup & sidecar status
   agy-quota --uninstall-overlay          Remove ASAR preload hook & top-right overlay cleanly
 
-2) Desktop Native Right Auxiliary Sidecar (Zero ASAR Patch):
+2) Agent Skill (/agy-quota Slash Command & Natural-Language Quota Assistant):
+  agy-quota --skill | --install-skill    Install self-contained /agy-quota skill (~/.gemini/config/skills/agy-quota)
+  agy-quota --skill-status [--json]      Check installed /agy-quota skill status
+  agy-quota --uninstall-skill            Remove standalone /agy-quota skill
+
+3) Desktop Native Right Auxiliary Sidecar (Zero ASAR Patch):
   agy-quota --sidecar | install          Install patch-free native right-pane plugin (same as node install.mjs)
+  agy-quota --sidecar-status [--json]    Check native right-pane plugin status
   agy-quota --uninstall-sidecar          Remove native right-pane plugin (same as node install.mjs --uninstall)
 
 Online Self-Update:
@@ -103,7 +109,18 @@ async function run() {
     return;
   }
 
-  // 2. Native Right Auxiliary Sidecar installer / uninstaller / status
+  // 2. Standalone Agent Skill (/agy-quota) installer / status / uninstaller
+  if (
+    args.includes('--skill') ||
+    args.includes('--install-skill') ||
+    args.includes('--uninstall-skill') ||
+    args.includes('--skill-status')
+  ) {
+    process.exitCode = await runChild(INSTALL_SCRIPT, args);
+    return;
+  }
+
+  // 3. Native Right Auxiliary Sidecar installer / uninstaller / status
   if (
     args.includes('--uninstall-sidecar') ||
     args.includes('--uninstall') ||

@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const APP_VERSION = '1.2.0';
+  const APP_VERSION = '1.3.0';
   const DEFAULT_GITHUB_REPO = 'awu5425/agy-quota';
   const POLL_MS = 60_000;
   const COUNTDOWN_TICK_MS = 30_000;
