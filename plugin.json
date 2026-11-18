@@ -1,7 +1,7 @@
 {
   "name": "agy-quota",
   "displayName": "AGY Quota",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "description": "Real-time Antigravity account quota suite (/agy-quota skill + semi-ring dashboard): tier-adaptive pools, 5h & weekly resets, 90-minute per-model burn rates, and subscription credits.",
   "homepage": "https://github.com/awu5425/agy-quota",
   "repository": "https://github.com/awu5425/agy-quota",

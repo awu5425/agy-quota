@@ -12,6 +12,7 @@ const path = require('node:path');
 
 const OVERLAY_START_MARKER = '/* === AGY_QUOTA_OVERLAY_START === */';
 const OVERLAY_END_MARKER = '/* === AGY_QUOTA_OVERLAY_END === */';
+const SANDBOX_BOOT_MARKER = '/* AGY_QUOTA_SANDBOX_BOOT_V2 */';
 const LOCK_TTL_MS = 60_000;
 
 function resolveSharedQuotaDir() {
@@ -118,6 +119,7 @@ function inspectAsarSliceFast(asarPath) {
     const preloadMeta = distFiles['preload.js'] || null;
 
     let hasOverlayMarker = false;
+    let embeddedVersion = '';
     if (preloadMeta && !preloadMeta.unpacked && Number.isFinite(Number(preloadMeta.size))) {
       const pSize = Number(preloadMeta.size);
       const pOffset = dataOffset + Number(preloadMeta.offset);
@@ -127,11 +129,16 @@ function inspectAsarSliceFast(asarPath) {
         const preloadSource = pBuf.toString('utf8');
         hasOverlayMarker =
           preloadSource.includes(OVERLAY_START_MARKER) &&
-          preloadSource.includes(OVERLAY_END_MARKER);
+          preloadSource.includes(OVERLAY_END_MARKER) &&
+          preloadSource.includes(SANDBOX_BOOT_MARKER);
+        const verMatch = preloadSource.match(/\/\* AGY_QUOTA_EMBED_VER:([0-9A-Za-z._-]+) \*\//);
+        if (verMatch) {
+          embeddedVersion = verMatch[1];
+        }
       }
     }
 
-    return { hasOverlayMarker, hasMeterManifest };
+    return { hasOverlayMarker, embeddedVersion, hasMeterManifest };
   } finally {
     fs.closeSync(fd);
   }
@@ -185,8 +192,20 @@ function runGuard() {
     return;
   }
 
+  let expectedVersion = '';
+  try {
+    const verFile = path.join(stateDir, 'agy-quota-overlay', 'installed-version.json');
+    if (fs.existsSync(verFile)) {
+      const verMeta = JSON.parse(fs.readFileSync(verFile, 'utf8'));
+      if (typeof verMeta?.version === 'string') {
+        expectedVersion = verMeta.version.trim();
+      }
+    }
+  } catch (_) {}
+
+  const versionSynced = !expectedVersion || inspection.embeddedVersion === expectedVersion;
   const companionExpected = isCompanionExpected(stateDir);
-  if (inspection.hasOverlayMarker && (!companionExpected || inspection.hasMeterManifest)) {
+  if (inspection.hasOverlayMarker && versionSynced && (!companionExpected || inspection.hasMeterManifest)) {
     return;
   }
 

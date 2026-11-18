@@ -35,6 +35,7 @@ const REPO_ROOT = resolve(SRC_DIR, '..');
 
 const OVERLAY_START_MARKER = '/* === AGY_QUOTA_OVERLAY_START === */';
 const OVERLAY_END_MARKER = '/* === AGY_QUOTA_OVERLAY_END === */';
+const SANDBOX_BOOT_MARKER = '/* AGY_QUOTA_SANDBOX_BOOT_V2 */';
 const METER_PRELOAD_START_MARKER = '// --- Antigravity Context Meter preload Injection Start ---';
 
 const CAPSULE_BLOCK_RE =
@@ -50,9 +51,9 @@ const COMPANION_FILES = ['quota-core.cjs', 'overlay-preload.cjs', 'meter-overlay
 function readRepoVersion() {
   try {
     const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
-    return pkg.version || '1.3.2';
+    return pkg.version || '1.3.3';
   } catch {
-    return '1.3.2';
+    return '1.3.3';
   }
 }
 
@@ -206,29 +207,70 @@ export function discoverDevToolsPortFiles() {
   return candidates.filter((p) => existsSync(p));
 }
 
-export function buildOverlayPreloadSnippet() {
+export function buildOverlayPreloadSnippet(uiSourceCode = null, embedVersion = null) {
+  const resolvedUiSource =
+    typeof uiSourceCode === 'string' && uiSourceCode.trim()
+      ? uiSourceCode
+      : readFileSync(join(SRC_DIR, 'meter-overlay-ui.js'), 'utf8');
+  const resolvedVer = String(embedVersion || readRepoVersion()).trim();
+  const encodedUi = JSON.stringify(resolvedUiSource);
+
   return [
     OVERLAY_START_MARKER,
+    SANDBOX_BOOT_MARKER,
+    `/* AGY_QUOTA_EMBED_VER:${resolvedVer} */`,
     '(function () {',
+    '  var loadedFromDisk = false;',
     '  try {',
-    '    const fs = require("node:fs");',
-    '    const path = require("node:path");',
-    '    const os = require("node:os");',
-    '    const home = os.homedir();',
-    '    const stateDir =',
-    '      process.platform === "win32"',
-    '        ? path.join(process.env.LOCALAPPDATA || path.join(home, "AppData", "Local"), "AntigravityContextMeter")',
-    '        : process.platform === "darwin"',
-    '          ? path.join(home, "Library", "Application Support", "AntigravityContextMeter")',
-    '          : path.join(process.env.XDG_CONFIG_HOME || path.join(home, ".config"), "AntigravityContextMeter");',
-    '    const primary = path.join(stateDir, "agy-quota-overlay", "overlay-preload.cjs");',
-    '    const fallback = path.join(home, ".gemini", "antigravity", "agy-quota", "overlay", "overlay-preload.cjs");',
-    '    if (fs.existsSync(primary)) {',
-    '      require(primary);',
-    '    } else if (fs.existsSync(fallback)) {',
-    '      require(fallback);',
+    '    if (typeof require === "function") {',
+    '      var fs = require("node:fs");',
+    '      var path = require("node:path");',
+    '      var os = require("node:os");',
+    '      var home = os.homedir();',
+    '      var stateDir =',
+    '        process.platform === "win32"',
+    '          ? path.join(process.env.LOCALAPPDATA || path.join(home, "AppData", "Local"), "AntigravityContextMeter")',
+    '          : process.platform === "darwin"',
+    '            ? path.join(home, "Library", "Application Support", "AntigravityContextMeter")',
+    '            : path.join(process.env.XDG_CONFIG_HOME || path.join(home, ".config"), "AntigravityContextMeter");',
+    '      var primary = path.join(stateDir, "agy-quota-overlay", "overlay-preload.cjs");',
+    '      var fallback = path.join(home, ".gemini", "antigravity", "agy-quota", "overlay", "overlay-preload.cjs");',
+    '      if (fs.existsSync(primary)) {',
+    '        require(primary);',
+    '        loadedFromDisk = Boolean(globalThis.__AGY_QUOTA_OVERLAY_PRELOAD__);',
+    '      } else if (fs.existsSync(fallback)) {',
+    '        require(fallback);',
+    '        loadedFromDisk = Boolean(globalThis.__AGY_QUOTA_OVERLAY_PRELOAD__);',
+    '      }',
     '    }',
-    '  } catch (_err) {}',
+    '  } catch (_diskErr) {}',
+    '  if (loadedFromDisk) return;',
+    '  try {',
+    '    var el = typeof electron_1 !== "undefined" ? electron_1 : (typeof require === "function" ? require("electron") : null);',
+    '    var wf = el && el.webFrame;',
+    '    if (!wf || typeof wf.executeJavaScript !== "function") return;',
+    '    var injected = false;',
+    `    var uiCode = ${encodedUi};`,
+    '    var boot = function () {',
+    '      if (injected) return;',
+    '      try {',
+    '        if (typeof window !== "undefined" && window.top && window !== window.top) return;',
+    '        if (typeof location !== "undefined" && location && typeof location.protocol === "string") {',
+    '          var proto = location.protocol;',
+    '          if (proto !== "http:" && proto !== "https:" && proto !== "file:") return;',
+    '        }',
+    '        injected = true;',
+    '        Promise.resolve(wf.executeJavaScript(uiCode)).catch(function () {});',
+    '      } catch (_bootErr) {}',
+    '    };',
+    '    if (typeof document !== "undefined" && document && (document.readyState === "interactive" || document.readyState === "complete")) {',
+    '      boot();',
+    '    }',
+    '    if (!injected && typeof window !== "undefined" && window && typeof window.addEventListener === "function") {',
+    '      window.addEventListener("DOMContentLoaded", boot, { once: true });',
+    '      window.addEventListener("load", boot, { once: true });',
+    '    }',
+    '  } catch (_sbxErr) {}',
     '})();',
     OVERLAY_END_MARKER,
   ].join('\n');
@@ -236,7 +278,7 @@ export function buildOverlayPreloadSnippet() {
 
 export function transformPreloadSource(
   source,
-  { mode = 'install', migrateCapsule = false, restoreCapsuleBlock = '' } = {},
+  { mode = 'install', migrateCapsule = false, restoreCapsuleBlock = '', uiSource = null } = {},
 ) {
   if (typeof source !== 'string' || !source.length) {
     throw new Error('dist/preload.js source is empty or invalid');
@@ -248,7 +290,7 @@ export function transformPreloadSource(
       code = code.replace(CAPSULE_BLOCK_RE, '\n');
     }
     code = code.replace(OVERLAY_BLOCK_RE, '\n');
-    const snippet = buildOverlayPreloadSnippet();
+    const snippet = buildOverlayPreloadSnippet(uiSource);
     const meterIdx = code.indexOf(METER_PRELOAD_START_MARKER);
     if (meterIdx >= 0) {
       const before = code.slice(0, meterIdx).replace(/\s*$/, '');
@@ -373,6 +415,9 @@ export function inspectAsarFast(asarPath) {
         preloadSource &&
           preloadSource.includes(OVERLAY_START_MARKER) &&
           preloadSource.includes(OVERLAY_END_MARKER),
+      ),
+      hasSandboxBootMarker: Boolean(
+        preloadSource && preloadSource.includes(SANDBOX_BOOT_MARKER),
       ),
       hasCapsuleMarker: Boolean(
         preloadSource && preloadSource.includes('AGY_CONTEXT_CAPSULE_START'),
@@ -1518,10 +1563,12 @@ export async function installMeterOverlay(options = {}) {
     removedSidecarPlugin = Boolean(rmRes.removed);
   }
 
-  // Surgical ASAR preload.js patch (inject AGY_QUOTA_OVERLAY, vm.Script check; preserve other tools by default)
+  // Surgical ASAR preload.js patch (inject sandbox-compatible AGY_QUOTA_OVERLAY, vm.Script check; preserve other tools by default)
+  const uiBundleSource = readFileSync(join(overlayDir, 'meter-overlay-ui.js'), 'utf8');
   const nextPreload = transformPreloadSource(currentInspect.preloadSource, {
     mode: 'install',
     migrateCapsule,
+    uiSource: uiBundleSource,
   });
   let asarResult;
   if (nextPreload !== currentInspect.preloadSource) {
@@ -1752,6 +1799,7 @@ export function getOverlayStatus(options = {}) {
 
   const healthy =
     asarInspect.hasOverlayMarker &&
+    asarInspect.hasSandboxBootMarker &&
     preloadSyntaxValid &&
     allCompanionPresent;
 
@@ -1763,6 +1811,7 @@ export function getOverlayStatus(options = {}) {
     asarPath,
     hasMeterManifest: asarInspect.hasMeterManifest,
     hasOverlayMarker: asarInspect.hasOverlayMarker,
+    hasSandboxBootMarker: asarInspect.hasSandboxBootMarker,
     hasCapsuleMarker: asarInspect.hasCapsuleMarker,
     preloadSyntaxValid,
     preloadSha256: asarInspect.preloadSha256,

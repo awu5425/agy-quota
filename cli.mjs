@@ -14,9 +14,9 @@ const OVERLAY_SCRIPT = join(REPO_ROOT, 'src', 'overlay-installer.mjs');
 function getPackageVersion() {
   try {
     const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
-    return pkg.version || '1.3.2';
+    return pkg.version || '1.3.3';
   } catch {
-    return '1.3.2';
+    return '1.3.3';
   }
 }
 

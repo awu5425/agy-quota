@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * AGY Quota Top-Right & Companion Preload Bridge (overlay-preload.cjs — v1.3.2)
+ * AGY Quota Top-Right & Companion Preload Bridge (overlay-preload.cjs — v1.3.3)
  *
  * Runs inside Electron's Preload context (CommonJS) with strict fail-open
  * protection so any unexpected runtime error never blocks the host window.
@@ -35,7 +35,7 @@
     }
 
     const { contextBridge, ipcRenderer, webFrame } = electron;
-    const DEFAULT_OVERLAY_VERSION = '1.3.2';
+    const DEFAULT_OVERLAY_VERSION = '1.3.3';
     const DEFAULT_UPDATE_PREFS = Object.freeze({
       autoUpdate: true,
       lastCheckedAt: 0,

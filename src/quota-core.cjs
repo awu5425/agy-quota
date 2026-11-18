@@ -3319,10 +3319,10 @@ async function runCliReport(argv = []) {
 }
 
 // ---------------------------------------------------------------------------
-// Self-Update & Online Hot-Upgrade Engine (v1.3.2 — Source-Pinned & Commit-Locked)
+// Self-Update & Online Hot-Upgrade Engine (v1.3.3 — Source-Pinned & Commit-Locked)
 // ---------------------------------------------------------------------------
 
-const QUOTA_CORE_VERSION = '1.3.2';
+const QUOTA_CORE_VERSION = '1.3.3';
 const DEFAULT_UPDATE_REPO = 'awu5425/agy-quota';
 const TRUSTED_GITHUB_API_BASE = 'https://api.github.com';
 const TRUSTED_GITHUB_RAW_BASE = 'https://raw.githubusercontent.com';

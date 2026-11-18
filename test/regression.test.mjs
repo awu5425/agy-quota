@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import vm from 'node:vm';
 
 import {
   CANONICAL_BUNDLE_FILES,
@@ -33,6 +34,7 @@ import {
   moveDirectorySafe,
 } from '../scripts/agy-quota.mjs';
 import {
+  buildOverlayPreloadSnippet,
   computeAsarIntegrity,
   getOverlayStatus,
   inspectAsarFast,
@@ -1018,4 +1020,112 @@ test('11. True ASAR write-back failure inside rewriteAsarPreloadSurgical cleans 
   assert.ok(finalInspect.preloadSource.includes('__CAPSULE_WRITEBACK_TEST__'));
   assert.equal(readFileSync(capsulePayloadPath, 'utf8'), initialPayload);
   assert.equal(existsSync(join(backupsDir, 'capsule-migration.json')), false);
+});
+
+test('12. Sandboxed Electron preload (sandbox: true, no node:fs) boots embedded UI on workbench cold-start and upgrades legacy preload', async (t) => {
+  const snippet = buildOverlayPreloadSnippet();
+  assert.ok(snippet.includes('/* AGY_QUOTA_SANDBOX_BOOT_V2 */'));
+  assert.ok(snippet.includes(`/* AGY_QUOTA_EMBED_VER:${SKILL_BUNDLE_VERSION} */`));
+
+  function runInSandboxedPreload({ protocol = 'https:', isIframe = false, readyState = 'loading' } = {}) {
+    const executedScripts = [];
+    const listeners = new Map();
+    const winObj = {
+      addEventListener(type, fn) {
+        if (!listeners.has(type)) listeners.set(type, []);
+        listeners.get(type).push(fn);
+      },
+    };
+    winObj.top = isIframe ? {} : winObj;
+
+    const sandboxRequire = (modId) => {
+      if (modId === 'electron') {
+        return {
+          webFrame: {
+            executeJavaScript(code) {
+              executedScripts.push(code);
+              return Promise.resolve(true);
+            },
+          },
+        };
+      }
+      throw new Error(`module not found: ${modId}`);
+    };
+
+    const ctx = vm.createContext({
+      require: sandboxRequire,
+      window: winObj,
+      location: { protocol },
+      document: { readyState },
+      Promise,
+    });
+    ctx.globalThis = ctx;
+
+    vm.runInContext(snippet, ctx, { filename: 'dist/preload.js' });
+    return {
+      executedScripts,
+      fire(type) {
+        for (const fn of listeners.get(type) || []) fn();
+      },
+    };
+  }
+
+  // 12A. Splash screen (data: protocol) must NOT inject overlay UI
+  const splash = runInSandboxedPreload({ protocol: 'data:', readyState: 'complete' });
+  splash.fire('DOMContentLoaded');
+  splash.fire('load');
+  assert.equal(splash.executedScripts.length, 0, 'splash data: window must be skipped');
+
+  // 12B. Subframe / iframe must NOT inject overlay UI
+  const frame = runInSandboxedPreload({ protocol: 'https:', isIframe: true, readyState: 'complete' });
+  frame.fire('DOMContentLoaded');
+  assert.equal(frame.executedScripts.length, 0, 'iframes must be skipped');
+
+  // 12C. Top-level workbench window cold-start (readyState=loading -> DOMContentLoaded + load) injects exactly once
+  const workbench = runInSandboxedPreload({ protocol: 'https:', isIframe: false, readyState: 'loading' });
+  assert.equal(workbench.executedScripts.length, 0, 'waits for DOMContentLoaded when loading');
+  workbench.fire('DOMContentLoaded');
+  workbench.fire('load');
+  assert.equal(workbench.executedScripts.length, 1, 'must inject exactly once across DOMContentLoaded and load');
+  assert.ok(
+    workbench.executedScripts[0].includes(`OVERLAY_VERSION = '${SKILL_BUNDLE_VERSION}'`),
+    'injected UI code must carry current OVERLAY_VERSION',
+  );
+  // Injected UI bundle must be valid JS
+  new vm.Script(workbench.executedScripts[0], { filename: 'meter-overlay-ui.js' });
+
+  // 12D. Legacy v1.3.2 preload block (without AGY_QUOTA_SANDBOX_BOOT_V2) is detected as outdated and upgraded
+  const workDir = makeTempDir('legacy-preload-upgrade');
+  t.after(() => rmSync(workDir, { recursive: true, force: true }));
+  const asarPath = join(workDir, 'app.asar');
+  const legacyPreload = [
+    '"use strict";',
+    'const electron_1 = require("electron");',
+    '/* === AGY_QUOTA_OVERLAY_START === */',
+    '(function(){ try { require("node:fs"); } catch (_e) {} })();',
+    '/* === AGY_QUOTA_OVERLAY_END === */',
+  ].join('\n');
+  writeFileSync(
+    asarPath,
+    buildMinimalAsarBuffer({
+      'package.json': JSON.stringify({ name: 'antigravity', version: '2.32.2' }),
+      'dist/preload.js': legacyPreload,
+    }),
+  );
+
+  const beforeStatus = getOverlayStatus({ asarPath, stateDir: join(workDir, 'state') });
+  assert.equal(beforeStatus.ok, false, 'legacy preload without sandbox boot marker must report ok=false');
+  assert.equal(beforeStatus.hasSandboxBootMarker, false);
+
+  await installMeterOverlay({
+    asarPath,
+    stateDir: join(workDir, 'state'),
+    sharedDataDir: join(workDir, 'shared'),
+    skipCdp: true,
+    skipCompanionRestore: true,
+  });
+
+  const afterStatus = getOverlayStatus({ asarPath, stateDir: join(workDir, 'state') });
+  assert.equal(afterStatus.ok, true);
+  assert.equal(afterStatus.hasSandboxBootMarker, true);
 });

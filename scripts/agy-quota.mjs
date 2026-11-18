@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Self-contained AGY Quota Skill Runner (v1.3.2).
+ * Self-contained AGY Quota Skill Runner (v1.3.3).
  * Resolves the local agy-quota CLI across repo, plugin, and standalone skill
  * layouts, and auto-bootstraps the verified, commit-locked runtime into
  * ./runtime/ on first run when installed as a standalone subfolder
@@ -27,7 +27,7 @@ const __filename = fileURLToPath(import.meta.url);
 const SCRIPTS_DIR = resolve(dirname(__filename));
 const SKILL_DIR = resolve(SCRIPTS_DIR, '..');
 
-export const SKILL_BUNDLE_VERSION = '1.3.2';
+export const SKILL_BUNDLE_VERSION = '1.3.3';
 export const TRUSTED_BOOTSTRAP_REPO = 'awu5425/agy-quota';
 const IMMUTABLE_SHA_RE = /^[0-9a-f]{40}$/;
 

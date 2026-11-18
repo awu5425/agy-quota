@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const OVERLAY_VERSION = '1.3.2';
+  const OVERLAY_VERSION = '1.3.3';
   const CTL_KEY = '__AGY_QUOTA_OVERLAY_CTL__';
   const SNAP_CACHE_KEY = '__AGY_QUOTA_LAST_SNAPSHOT__';
   const UPDATED_BADGE_KEY = '__AGY_QUOTA_UPDATED_BADGE__';
@@ -2670,7 +2670,8 @@
   }
 
   function adaptHostMeterQuotaFallback(hostQuota) {
-    const snap = hostQuota?.snapshot || hostQuota?.view || hostQuota;
+    const raw = hostQuota?.data && typeof hostQuota.data === 'object' ? hostQuota.data : hostQuota;
+    const snap = raw?.snapshot || raw?.view || raw;
     if (!snap || !Array.isArray(snap.pools)) return null;
     const now = Date.now();
 
@@ -4165,17 +4166,35 @@
           hostBanner.style.display = 'none';
         }
         const hostBadge = mountedShadow.getElementById('badge-quota');
-        if (hostBadge && /失败|failed|error/i.test(hostBadge.textContent || '')) {
+        const qStateAttr = hostBadge ? String(hostBadge.getAttribute('data-quota-state') || '') : '';
+        if (
+          hostBadge &&
+          (qStateAttr === 'stale' ||
+            qStateAttr === 'error' ||
+            /失败|过期|failed|error|stale/i.test(hostBadge.textContent || ''))
+        ) {
           const primaryPool =
             pools.find((p) => p.id === activePoolId && p.hasData) ||
             pools.find((p) => p.hasData) ||
             pools[0];
           if (primaryPool && Number.isFinite(Number(primaryPool.remaining))) {
+            const pctRound = Math.round(clamp(Number(primaryPool.remaining), 0, 100));
             const valEl = mountedShadow.getElementById('quota-badge-val');
             const tagEl = mountedShadow.getElementById('quota-badge-tag');
-            if (valEl) valEl.textContent = `${Math.round(Number(primaryPool.remaining))}%`;
-            if (tagEl) tagEl.textContent = '5h';
-            hostBadge.classList.remove('error', 'is-error', 'failed');
+            const ringFill = mountedShadow.getElementById('quota-ring-fill');
+            if (valEl) valEl.textContent = `${pctRound}%`;
+            if (tagEl) {
+              const cd = primaryPool.resetDate
+                ? formatCountdown(primaryPool.resetDate - Date.now(), primaryPool.resetTime || '5h')
+                : (primaryPool.resetTime || '5h');
+              tagEl.textContent = cd && cd !== 'N/A' ? cd : '5h';
+            }
+            if (ringFill) {
+              const circ = 2 * Math.PI * 6.5;
+              ringFill.setAttribute('stroke-dashoffset', (circ * (1 - pctRound / 100)).toFixed(2));
+            }
+            hostBadge.setAttribute('data-quota-state', 'ok');
+            hostBadge.classList.remove('error', 'is-error', 'failed', 'stale', 'is-stale');
           }
         }
       }
