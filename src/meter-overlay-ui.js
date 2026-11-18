@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const OVERLAY_VERSION = '1.3.0';
+  const OVERLAY_VERSION = '1.3.1';
   const CTL_KEY = '__AGY_QUOTA_OVERLAY_CTL__';
   const SNAP_CACHE_KEY = '__AGY_QUOTA_LAST_SNAPSHOT__';
   const UPDATED_BADGE_KEY = '__AGY_QUOTA_UPDATED_BADGE__';
@@ -1908,6 +1908,30 @@
     return Array.from(mergedById.values()).sort((a, b) => a.ts - b.ts);
   }
 
+  const MIN_LOCAL_BURN_SPAN_MS = 2 * 60_000;
+
+  function computeEffectiveLocalRateHours(scopedPoints, poolId, windowStart, latestReset, now) {
+    const rateFloor = latestReset ? Math.max(windowStart, latestReset) : windowStart;
+    let hasPointAtOrBeforeFloor = false;
+    let earliestAfterFloor = null;
+
+    for (const pt of Array.isArray(scopedPoints) ? scopedPoints : []) {
+      if (!pt || typeof pt.ts !== 'number') continue;
+      if (poolId && pt.pools && pt.pools[poolId] === undefined) continue;
+      if (latestReset && pt.ts < latestReset) continue;
+      if (pt.ts <= rateFloor) {
+        hasPointAtOrBeforeFloor = true;
+      } else if (earliestAfterFloor === null || pt.ts < earliestAfterFloor) {
+        earliestAfterFloor = pt.ts;
+      }
+    }
+
+    const effectiveStart = hasPointAtOrBeforeFloor || earliestAfterFloor === null
+      ? rateFloor
+      : Math.max(rateFloor, earliestAfterFloor);
+    return Math.max(now - effectiveStart, MIN_LOCAL_BURN_SPAN_MS) / 3_600_000;
+  }
+
   function buildModelTrendAttribution({
     pools,
     buckets,
@@ -2096,8 +2120,13 @@
       .filter((s) => s.totalPp > 0.005 || s.calls > 0)
       .map((s) => {
         const latestReset = latestResetByPool[s.poolId] ?? null;
-        const rateStart = latestReset ? Math.max(windowStart, latestReset) : windowStart;
-        const elapsedHours = Math.max(now - rateStart, bucketMs) / 3_600_000;
+        const elapsedHours = computeEffectiveLocalRateHours(
+          scopedPoints,
+          s.poolId,
+          windowStart,
+          latestReset,
+          now,
+        );
         return {
           modelId: s.modelId,
           label: s.label,
@@ -2236,13 +2265,18 @@
         continue;
       }
       const latestReset = latestResetByPool[pool.id] ?? null;
-      const rateStart = latestReset ? Math.max(windowStart, latestReset) : windowStart;
       let totalDrop = 0;
       for (const b of buckets) {
         if (latestReset && b.endTime <= latestReset) continue;
         totalDrop += b.items[pool.id] || 0;
       }
-      const elapsedHours = Math.max(now - rateStart, bucketMs) / 3_600_000;
+      const elapsedHours = computeEffectiveLocalRateHours(
+        scopedPoints,
+        pool.id,
+        windowStart,
+        latestReset,
+        now,
+      );
       const usageRate = elapsedHours > 0 ? totalDrop / elapsedHours : 0;
       let runway = 'Stable';
       if (usageRate > 0.05 && pool.remaining > 0) {
@@ -2358,7 +2392,7 @@
       const parsedReset = m.quotaInfo.resetTime ? Date.parse(m.quotaInfo.resetTime) : NaN;
       const hasReset = Number.isFinite(parsedReset);
       const timeUntilReset = hasReset ? formatCountdown(parsedReset - now, 'N/A', 'Ready') : 'N/A';
-      const remainingPct = timeUntilReset === 'Ready' ? 100 : frac * 100;
+      const remainingPct = frac * 100;
       const resetDate = hasReset ? parsedReset : null;
       const dedupeKey = `${initialPoolId}::${baseLabel.toLowerCase()}`;
       const existing = dedupedModelMap.get(dedupeKey);
@@ -2398,7 +2432,7 @@
         const parsedReset = b.resetTime ? Date.parse(b.resetTime) : NaN;
         const hasReset = Number.isFinite(parsedReset);
         const timeUntilReset = hasReset ? formatCountdown(parsedReset - now, 'N/A', 'Ready') : 'N/A';
-        const remainingPct = timeUntilReset === 'Ready' ? 100 : frac * 100;
+        const remainingPct = frac * 100;
         const bucketObj = {
           bucketId: b.bucketId,
           displayName: b.displayName || b.bucketId,
@@ -3502,7 +3536,7 @@
     const isCurrent = Boolean(activePoolId && activePoolId === id);
     const pct = hasData ? clamp(remaining, 0, 100) : 0;
     const liveCountdown = resetDate ? formatCountdown(resetDate - Date.now(), resetTime || 'N/A') : (resetTime || 'N/A');
-    const pctStr = hasData ? formatPercent(liveCountdown === t('ready') ? Math.max(pct, Number(remaining) || 0) : pct) : 'N/A';
+    const pctStr = hasData ? formatPercent(pct) : 'N/A';
     const activeColor = hasData ? colorForPct(pct, themeColor) : 'var(--qp-fg-muted)';
     const resetClock = resetDate ? formatResetClock(resetDate) : '';
     const submodelsTitle = Array.isArray(modelLabels) && modelLabels.length > 0

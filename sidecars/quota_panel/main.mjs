@@ -82,7 +82,7 @@ async function importSidecarSdk() {
   throw lastErr;
 }
 
-const CLI_HELP_TEXT = `AGY Quota v1.3.0 Sidecar & CLI
+const CLI_HELP_TEXT = `AGY Quota v1.3.1 Sidecar & CLI
 
 Usage:
   node main.mjs --cli [options]       Render colored quota dashboard in terminal
@@ -90,7 +90,7 @@ Usage:
   node main.mjs --dump | --json       Print full quota snapshot as JSON
   node main.mjs --check-update        Check GitHub for newer AGY Quota release
   node main.mjs --update [--dry-run]  Download, syntax-verify & hot-apply latest update
-  node main.mjs --standalone [--host <addr>] [--port <n>]
+  node main.mjs --standalone [--host <addr>] [--port <n>] [--admin-token <token>]
                                       Start standalone local Web UI server
   node main.mjs --help, -h            Show this help message
 
@@ -100,12 +100,14 @@ CLI Options:
   --iterations <n>      Exit after <n> watch refreshes (for automated checks)
   --mask                Mask account email (e.g. bi***@gmail.com)
   --no-color            Disable ANSI terminal colors (also honors NO_COLOR)
+  --read-only           Do not write local connection cache, quota history, or refreshed OAuth tokens
   --oauth               Force Cloud Code OAuth API fallback (~/.gemini/antigravity-cli)
   --profile-dir <dir>   Target profile home containing .gemini/antigravity-cli
   --check-update        Query remote version (honors HTTPS_PROXY & ContextMeter proxy)
-  --update              Pull & atomically sync runtime update (--dry-run, --force, --repo)
+  --update              Pull & atomically sync runtime update (--dry-run, --force, --skill-dir)
   --host <addr>         Bind address for --standalone (default: 127.0.0.1)
-  --port <n>            Bind port for --standalone (default: 0 / auto)`;
+  --port <n>            Bind port for --standalone (default: 0 / auto)
+  --admin-token <tok>   Required bearer/header token to enable /api/update/* on non-loopback hosts`;
 
 async function runDumpMode(argv, runtimeOptions) {
   const snap = await fetchQuotaSnapshot(true, runtimeOptions);
@@ -125,7 +127,10 @@ async function runDumpMode(argv, runtimeOptions) {
 }
 
 async function runStandaloneServer(port = 0, host = '127.0.0.1', runtimeOptions = {}) {
-  const handler = createStandaloneHandler(__dirname, runtimeOptions);
+  const handler = createStandaloneHandler(__dirname, {
+    ...runtimeOptions,
+    listenHost: host,
+  });
   const server = http.createServer((req, res) => {
     handler(req, res).catch((err) => {
       res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -162,26 +167,24 @@ async function runSidecarMode(runtimeOptions = {}) {
 
   const handleUpdateCheck = async (data) => {
     const force = data?.force === true || data?.force === '1';
-    const checkRes = await checkSelfUpdate({
-      force,
-      currentVersion: data?.currentVersion || undefined,
-      repo: data?.repo || undefined,
-    });
+    const checkRes = await checkSelfUpdate({ force });
     return { ...checkRes, prefs: getUpdatePrefs() };
   };
   app.api('/api/update/check', handleUpdateCheck, 'POST');
   app.api('/api/update/check', handleUpdateCheck, 'GET');
 
   app.api('/api/update/prefs', async (data) => {
-    const patch = data?.prefs && typeof data.prefs === 'object' ? data.prefs : (data || {});
-    const prefs = setUpdatePrefs(patch);
+    const rawPatch = data?.prefs && typeof data.prefs === 'object' ? data.prefs : (data || {});
+    const safePatch = {};
+    if (typeof rawPatch.autoUpdate === 'boolean') safePatch.autoUpdate = rawPatch.autoUpdate;
+    if (typeof rawPatch.skippedVersion === 'string') safePatch.skippedVersion = rawPatch.skippedVersion;
+    if (typeof rawPatch.channel === 'string') safePatch.channel = rawPatch.channel;
+    const prefs = setUpdatePrefs(safePatch);
     return { ok: true, prefs, ...prefs };
   }, 'POST');
 
   app.api('/api/update/apply', async (data) => {
     return await applySelfUpdate({
-      repo: data?.repo || undefined,
-      targetRef: data?.targetRef || undefined,
       dryRun: data?.dryRun === true || data?.dryRun === '1',
     });
   }, 'POST');
@@ -200,6 +203,8 @@ function hasCliInvocationFlag(argv) {
     || arg === '--oauth'
     || arg === '--mask'
     || arg === '--no-color'
+    || arg === '--read-only'
+    || arg === '--no-save-history'
     || arg === '--profile-dir'
     || arg.startsWith('--profile-dir=')
     || arg === '--iterations'
@@ -214,7 +219,9 @@ if (isDirectEntry) {
   const args = process.argv.slice(2);
   const runtimeOptions = {
     oauthOnly: args.includes('--oauth'),
+    readOnly: args.includes('--read-only') || args.includes('--no-save-history'),
     profileDir: getFlagValue(args, '--profile-dir'),
+    adminToken: getFlagValue(args, '--admin-token') || process.env.AGY_QUOTA_ADMIN_TOKEN || '',
   };
 
   if (args.includes('--help') || args.includes('-h')) {

@@ -1,10 +1,10 @@
-# AGY Quota (`agy-quota` v1.3.0)
+# AGY Quota (`agy-quota` v1.3.1)
 
 English | [简体中文](./README.zh-CN.md)
 
 A 100% original, zero-dependency **Antigravity 2.x** account quota suite & **Agent Skill (`/agy-quota`)** powered by one shared engine (`src/quota-core.cjs`) and unified local history & settings store (`~/.gemini/antigravity/agy-quota`).
 
-`agy-quota` v1.3.0 gives you **full freedom of UI choice on desktop**, **native Agent Skill (`/agy-quota`) integration**, plus headless CLI & web tools:
+`agy-quota` v1.3.1 gives you **full freedom of UI choice on desktop**, **native Agent Skill (`/agy-quota`) integration**, plus headless CLI & web tools:
 
 1. **Top-Right Semi-Ring Overlay (`--top-right` / `--meter-overlay`)** — Dual-mode adaptive top-right quota board with CDP zero-restart hot-mounting:
    - **Standalone Top-Right HUD Mode (Zero Prerequisites)**: Works out of the box on a clean Antigravity installation **without** `antigravity-context-viewer` — mounts a compact circular SVG progress badge (`#agy-quota-standalone-hud`, safely clearing Windows window controls) that opens the `476px` 4-layer adaptive `1×2` / `1×3` semi-ring popover.
@@ -31,7 +31,12 @@ See [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) for deep technical details on
 
 ---
 
-## What's New in v1.3.0 & Key Highlights
+## What's New in v1.3.1 & Key Highlights
+
+- **Security & Reliability Hardening (`v1.3.1`)**:
+  - **Source-Pinned & Authenticated Self-Updater**: Update endpoints are strictly locked to `awu5425/agy-quota` on GitHub with 40-char commit SHA pinning and cross-file version verification; Standalone Web UI (`/api/update/*`) enforces loopback + same-origin CSRF tokens and automatically disables remote self-update mutations when bound to `0.0.0.0` unless `--admin-token` is explicitly supplied.
+  - **Non-Destructive HUD Installer**: `--top-right` leaves third-party and legacy tools (`context-capsule`, etc.) 100% untouched by default (with optional `--migrate-capsule` backup & automatic restore on `--uninstall-overlay`).
+  - **Unified Atomic Bundles & Cross-Volume Safe Staging**: Identical 24-file manifest across `--skill`, `--sidecar`, and `npx skills add` bootstrap with pre-flight completeness checks, same-volume atomic staging (`EXDEV`-safe), custom `--skill-dir` / `AGY_QUOTA_SKILL_DIR` self-update support, accurate short-span burn rate (`pp/h`), truthful post-reset quota display, and optional `--read-only` mode.
 
 - **Self-Contained `/agy-quota` Agent Skill (`SKILL.md` + `skills/agy-quota/` + `node cli.mjs --skill`)**:
   - Works seamlessly across `node cli.mjs --skill` (`~/.gemini/config/skills/agy-quota` offline bundle), `npx skills add awu5425/agy-quota` (auto-bootstraps & syntax-verifies `./runtime/` on first run), `git clone ... ~/.gemini/config/skills/agy-quota`, and native Antigravity plugin bundles (`plugin.json`).
@@ -43,13 +48,13 @@ See [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) for deep technical details on
 - **Host & System Theme Sync (`Auto / Dark / Light`)**:
   - Defaults to `Auto` — observes Antigravity host theme attributes/classes/background luminance and OS `prefers-color-scheme: dark` media changes in real time, with manual `Auto / Dark / Light` lock (`localStorage['agy_quota_theme']`).
 - **GitHub Online Check & Hot Self-Update (`--check-update` / `--update` + In-Panel Auto-Update)**:
-  - Compact footer bar (`.qp-footer-bar`) displays `AGY Quota v1.3.0`, update check/one-click update status, and an **`Auto-update` (`自动更新`)** toggle persisted in `~/.gemini/antigravity/agy-quota/settings.json`.
+  - Compact footer bar (`.qp-footer-bar`) displays `AGY Quota v1.3.1`, update check/one-click update status, and an **`Auto-update` (`自动更新`)** toggle persisted in `~/.gemini/antigravity/agy-quota/settings.json`.
   - Queries GitHub Releases (`releases/latest` with `raw.../main/package.json` fallback and proxy auto-detection), stages files in a temp directory with mandatory JS syntax verification before atomic replacement across active overlays, plugins, and installed skill runtimes, and hot-swaps the live overlay UI without restarting Antigravity.
 - **Streamlined 4-Layer Semi-Ring Quota Board (`476px`)**:
   1. **Compact Header & Account Bar**: `Arc | Ring` (`半弧 | 圆环`) gauge switch, `中 / EN` toggle, `Auto / Dark / Light` theme toggle, live refresh countdown, click-to-blur email privacy mask, and subscription tier badge (`Google AI Pro` / `Google AI Ultra`).
   2. **Adaptive `1×2` (Ultra) / `1×3` (Pro) Semi-Ring Pool Grid + Family Micro-Badges**: Dynamically matches server-returned quota groups (`RetrieveUserQuotaSummary` / `GetUserStatus`) — renders **2 equal-width cards** (`Gemini` · `Claude / GPT`) on Google AI Ultra where Argon shares `gemini-5h` / `gemini-weekly`, or **3 equal-width cards** (`Gemini` · `Argon` · `Claude / GPT`) on Google AI Pro when an independent Argon pool (`gemini-argon-wtu-weekly`) is present. Each card displays a crisp sub-label of included model families (e.g. `Carbon · Argon · Hydrogen · 3.8 Flash`, `Sonnet 4.6 · Opus 4.6 · GPT-OSS`), 210° semi-arc SVG gauge, 5h countdown, active session pool highlight, `pp/h` burn rate, and weekly bar.
   3. **Collapsible 90-Minute Per-Model & Per-Pool Usage Trend (`Models | Pools`)**: Defaults to **`Models`** (`按模型`) — renders `18 × 5m` color-coded per-model stacked bars (attributing pool quota drops by call cost/token weight, with perceptible micro-bars when calls occur before a quota step) and a compact 2-column grid of active model pills (`Carbon`, `Argon`, `Hydrogen`, `3.8 Flash`, `Opus 4.6`, `Sonnet 4.6`, `GPT-OSS`), with one-click toggle to **`Pools`** (`按池`) `1×2` / `1×3` burn-rate summary.
-  4. **Collapsible Tier Credits & Update Footer**: `Google One AI` plan credits, `Prompt` / `Flow` monthly credit bars, and the v1.3.0 self-update status bar.
+  4. **Collapsible Tier Credits & Update Footer**: `Google One AI` plan credits, `Prompt` / `Flow` monthly credit bars, and the v1.3.1 self-update status bar.
 - **5-Tier Connection Discovery (L0–L4)**:
   - **L0** Renderer same-origin Connect-RPC → **L1** `ANTIGRAVITY_LS_*` env vars → **L2** cached `last_ls_conn.json` → **L3** OS process/port probe (Windows/macOS/Linux) → **L4** direct Google Cloud Code OAuth API fallback (`--oauth`, `--profile-dir`).
 
@@ -59,7 +64,7 @@ See [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) for deep technical details on
 
 ```text
 agy-quota/
-├── package.json                     # v1.3.0 metadata (Apache-2.0, zero runtime dependencies)
+├── package.json                     # v1.3.1 metadata (Apache-2.0, zero runtime dependencies)
 ├── cli.mjs                          # Unified CLI (--top-right, --sidecar, --skill, --watch, --update, --standalone)
 ├── install.mjs                      # Native Right Sidecar & self-contained Agent Skill installer/uninstaller
 ├── plugin.json                      # Antigravity 2.x native plugin manifest (Sidecar + /agy-quota Skill)

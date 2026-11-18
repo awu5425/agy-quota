@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const APP_VERSION = '1.3.0';
+  const APP_VERSION = '1.3.1';
   const DEFAULT_GITHUB_REPO = 'awu5425/agy-quota';
   const POLL_MS = 60_000;
   const COUNTDOWN_TICK_MS = 30_000;
@@ -230,6 +230,15 @@
 
   function getApiFetch() {
     return window.sidecar?.fetch ? window.sidecar.fetch.bind(window.sidecar) : fetch;
+  }
+
+  function buildJsonHeaders() {
+    const headers = { 'Content-Type': 'application/json' };
+    const token = globalThis.__AGY_QUOTA_CSRF_TOKEN__;
+    if (typeof token === 'string' && token.trim()) {
+      headers['X-AGY-Quota-Token'] = token.trim();
+    }
+    return headers;
   }
 
   // -------------------------------------------------------------------------
@@ -865,7 +874,7 @@
     const isCurrent = Boolean(activePoolId && activePoolId === id);
     const pct = hasData ? Math.min(100, Math.max(0, Number(remaining) || 0)) : 0;
     const liveCountdown = resetDate ? formatCountdown(resetDate - Date.now(), resetTime || 'N/A') : (resetTime || 'N/A');
-    const pctStr = hasData ? formatPercent(liveCountdown === t('ready') ? Math.max(pct, Number(remaining) || 0) : pct) : 'N/A';
+    const pctStr = hasData ? formatPercent(pct) : 'N/A';
     const activeColor = hasData ? colorForPct(pct, themeColor) : 'var(--qp-fg-muted)';
     const resetClock = resetDate ? formatResetClock(resetDate) : '';
     const submodelsTitle = Array.isArray(modelLabels) && modelLabels.length > 0
@@ -1645,7 +1654,7 @@
         const url = force ? '/api/update/check?force=1' : '/api/update/check';
         const res = await f(url, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: buildJsonHeaders(),
           body: JSON.stringify({ force: Boolean(force) }),
         });
         if (res.ok) {
@@ -1689,7 +1698,7 @@
       const f = getApiFetch();
       await f('/api/update/prefs', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: buildJsonHeaders(),
         body: JSON.stringify({ autoUpdate: next }),
       });
     } catch {
@@ -1712,7 +1721,7 @@
       const f = getApiFetch();
       const res = await f('/api/update/apply', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: buildJsonHeaders(),
         body: JSON.stringify({}),
       });
       const json = await res.json().catch(() => null);

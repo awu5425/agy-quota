@@ -1,11 +1,12 @@
 'use strict';
 
 const { exec, execFileSync } = require('node:child_process');
-const { createHash, randomBytes } = require('node:crypto');
+const { createHash, randomBytes, timingSafeEqual } = require('node:crypto');
 const {
   chmodSync,
   closeSync,
   copyFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
   openSync,
@@ -21,7 +22,7 @@ const http = require('node:http');
 const https = require('node:https');
 const net = require('node:net');
 const { homedir, platform, tmpdir } = require('node:os');
-const { delimiter, dirname, extname, join, resolve } = require('node:path');
+const { basename, delimiter, dirname, extname, join, resolve } = require('node:path');
 const tls = require('node:tls');
 const { fileURLToPath } = require('node:url');
 const vm = require('node:vm');
@@ -742,7 +743,7 @@ async function discoverUnixCandidates() {
   return candidates;
 }
 
-async function tryFetchViaCandidate(cand, timeoutMs = PROBE_TIMEOUT_MS) {
+async function tryFetchViaCandidate(cand, timeoutMs = PROBE_TIMEOUT_MS, persistConn = true) {
   if (!cand?.host || !cand?.port || !cand?.csrfToken) return null;
   try {
     const statusRes = await rpcPost(cand, USER_STATUS_PATH, REQUEST_METADATA, timeoutMs);
@@ -760,7 +761,9 @@ async function tryFetchViaCandidate(cand, timeoutMs = PROBE_TIMEOUT_MS) {
     };
 
     cachedConn = activeConn;
-    saveLastLsConn(activeConn);
+    if (persistConn !== false) {
+      saveLastLsConn(activeConn);
+    }
 
     let quotaSummaryRes = null;
     try {
@@ -783,6 +786,7 @@ async function tryFetchViaCandidate(cand, timeoutMs = PROBE_TIMEOUT_MS) {
 }
 
 async function fetchViaLanguageServer(opts = {}) {
+  const persistConn = !opts.readOnly && !opts.noPersist;
   const pageOrigin = opts.origin ? parseAddress(opts.origin) : null;
   const pageCsrf = opts.csrfToken ? String(opts.csrfToken).trim() : '';
 
@@ -797,6 +801,7 @@ async function fetchViaLanguageServer(opts = {}) {
         source: 'page-origin',
       },
       PROBE_TIMEOUT_MS,
+      persistConn,
     );
     if (l0) return l0;
   }
@@ -814,6 +819,7 @@ async function fetchViaLanguageServer(opts = {}) {
           source: 'env',
         },
         HTTP_TIMEOUT_MS,
+        persistConn,
       );
       if (l1) return l1;
     }
@@ -821,20 +827,21 @@ async function fetchViaLanguageServer(opts = {}) {
 
   // L2: In-memory active connection & persisted last_ls_conn.json cache
   if (cachedConn) {
-    const memHit = await tryFetchViaCandidate({ ...cachedConn, source: 'ls-cache' }, PROBE_TIMEOUT_MS);
+    const memHit = await tryFetchViaCandidate({ ...cachedConn, source: 'ls-cache' }, PROBE_TIMEOUT_MS, persistConn);
     if (memHit) return memHit;
     cachedConn = null;
   }
 
   const diskConn = loadLastLsConn();
   if (diskConn) {
-    const diskHit = await tryFetchViaCandidate({ ...diskConn, source: 'ls-cache' }, PROBE_TIMEOUT_MS);
+    const diskHit = await tryFetchViaCandidate({ ...diskConn, source: 'ls-cache' }, PROBE_TIMEOUT_MS, persistConn);
     if (diskHit) return diskHit;
 
     if (pageCsrf && pageCsrf !== diskConn.csrfToken) {
       const diskWithPageCsrf = await tryFetchViaCandidate(
         { ...diskConn, csrfToken: pageCsrf, source: 'ls-cache' },
         PROBE_TIMEOUT_MS,
+        persistConn,
       );
       if (diskWithPageCsrf) return diskWithPageCsrf;
     }
@@ -857,6 +864,7 @@ async function fetchViaLanguageServer(opts = {}) {
           pid: cand.pid,
         },
         PROBE_TIMEOUT_MS,
+        persistConn,
       );
       if (hit) return hit;
     }
@@ -1434,17 +1442,46 @@ function computeActivityScore(usagePp, calls, weight) {
   return 0;
 }
 
+const MIN_BURN_SPAN_MS = 2 * 60_000;
+
+function computeEffectiveRateHours(scopedPoints, poolId, windowStart, latestReset, now) {
+  const rateFloor = latestReset ? Math.max(windowStart, latestReset) : windowStart;
+  let hasPointAtOrBeforeFloor = false;
+  let earliestAfterFloor = null;
+
+  for (const pt of scopedPoints || []) {
+    if (!pt || typeof pt.ts !== 'number') continue;
+    if (poolId && pt.pools && pt.pools[poolId] === undefined) continue;
+    if (latestReset && pt.ts < latestReset) continue;
+    if (pt.ts <= rateFloor) {
+      hasPointAtOrBeforeFloor = true;
+    } else if (earliestAfterFloor === null || pt.ts < earliestAfterFloor) {
+      earliestAfterFloor = pt.ts;
+    }
+  }
+
+  const effectiveStart = hasPointAtOrBeforeFloor || earliestAfterFloor === null
+    ? rateFloor
+    : Math.max(rateFloor, earliestAfterFloor);
+  return Math.max(now - effectiveStart, MIN_BURN_SPAN_MS) / 3_600_000;
+}
+
 function recordAndAnalyzeHistory(pools, now, accountKey = '', options = {}) {
-  const persist = options?.persist !== false;
+  const persist = options?.persist !== false && !options?.readOnly;
   const hasIndependentArgonPool = Boolean(options?.hasIndependentArgonPool);
   const models = Array.isArray(options?.models) ? options.models : [];
   const activeModelFamilyId = typeof options?.activeModelFamilyId === 'string' ? options.activeModelFamilyId : '';
+  const hasSeedPoints = Array.isArray(options?.seedPoints);
 
-  syncHistoryFromDisk(now);
+  if (!hasSeedPoints) {
+    syncHistoryFromDisk(now);
+  }
 
   const activePoolIds = new Set(pools.map((p) => p.id));
   const activeHasArgon = pools.some((p) => p.id === 'argon' && p.hasData);
-  const workingPoints = persist ? historyPoints : [...historyPoints];
+  const workingPoints = hasSeedPoints
+    ? options.seedPoints.map((pt) => ({ ...pt, pools: { ...(pt.pools || {}) } }))
+    : (persist ? historyPoints : [...historyPoints]);
   const scopedBefore = filterAccountHistory(workingPoints, accountKey, activeHasArgon);
   const prev = scopedBefore.length > 0 ? scopedBefore[scopedBefore.length - 1] : null;
 
@@ -1536,13 +1573,18 @@ function recordAndAnalyzeHistory(pools, now, accountKey = '', options = {}) {
       continue;
     }
     const latestReset = latestResetByPool[pool.id] ?? null;
-    const rateStart = latestReset ? Math.max(windowStart, latestReset) : windowStart;
     let totalDrop = 0;
     for (const b of buckets) {
       if (latestReset && b.endTime <= latestReset) continue;
       totalDrop += b.items[pool.id] || 0;
     }
-    const elapsedHours = Math.max(now - rateStart, bucketMs) / 3_600_000;
+    const elapsedHours = computeEffectiveRateHours(
+      scopedPoints,
+      pool.id,
+      windowStart,
+      latestReset,
+      now,
+    );
     const usageRate = elapsedHours > 0 ? totalDrop / elapsedHours : 0;
     let runway = 'Stable';
     if (usageRate > 0.05 && pool.remaining > 0) {
@@ -1802,8 +1844,13 @@ function recordAndAnalyzeHistory(pools, now, accountKey = '', options = {}) {
     .map((acc) => {
       const totalPp = Number(acc.rawTotalPp.toFixed(2));
       const latestReset = latestResetByPool[acc.poolId] ?? null;
-      const rateStart = latestReset ? Math.max(windowStart, latestReset) : windowStart;
-      const elapsedHours = Math.max(now - rateStart, bucketMs) / 3_600_000;
+      const elapsedHours = computeEffectiveRateHours(
+        scopedPoints,
+        acc.poolId,
+        windowStart,
+        latestReset,
+        now,
+      );
       const usageRatePp = elapsedHours > 0 ? Number((acc.postResetPp / elapsedHours).toFixed(2)) : 0;
       return {
         modelId: acc.modelId,
@@ -1883,7 +1930,7 @@ function mergeAndDedupeModels(rawModels, now) {
     const parsedReset = m.quotaInfo.resetTime ? Date.parse(m.quotaInfo.resetTime) : NaN;
     const hasReset = Number.isFinite(parsedReset);
     const timeUntilReset = hasReset ? formatTimeUntilReset(parsedReset - now) : 'N/A';
-    const remainingPercentage = timeUntilReset === 'Ready' ? 100 : rawFraction * 100;
+    const remainingPercentage = rawFraction * 100;
 
     const entry = {
       label: baseLabel,
@@ -1894,7 +1941,7 @@ function mergeAndDedupeModels(rawModels, now) {
       color: grp.color,
       remainingPercentage: Number(remainingPercentage.toFixed(2)),
       rawRemainingPercentage: Number((rawFraction * 100).toFixed(2)),
-      isExhausted: rawFraction === 0 && timeUntilReset !== 'Ready',
+      isExhausted: rawFraction === 0,
       resetDate: hasReset ? parsedReset : null,
       resetIso: hasReset ? m.quotaInfo.resetTime : null,
       timeUntilReset,
@@ -2159,7 +2206,7 @@ function extractPoolFamilies(poolId, poolModels = [], summaryGroups = [], hasInd
 }
 
 function parseSnapshot(userStatusData, summaryData, connInfo = {}) {
-  const now = Date.now();
+  const now = typeof connInfo?.now === 'number' && Number.isFinite(connInfo.now) ? connInfo.now : Date.now();
   const userStatus = userStatusData?.userStatus || userStatusData || {};
   const planStatus = userStatus.planStatus || {};
   const planInfo = planStatus.planInfo || {};
@@ -2232,7 +2279,7 @@ function parseSnapshot(userStatusData, summaryData, connInfo = {}) {
       const parsedReset = b.resetTime ? Date.parse(b.resetTime) : NaN;
       const hasReset = Number.isFinite(parsedReset);
       const timeUntilReset = hasReset ? formatTimeUntilReset(parsedReset - now) : 'N/A';
-      const remainingPercentage = timeUntilReset === 'Ready' ? 100 : frac * 100;
+      const remainingPercentage = frac * 100;
 
       const bucketObj = {
         bucketId: b.bucketId,
@@ -2403,7 +2450,9 @@ function parseSnapshot(userStatusData, summaryData, connInfo = {}) {
   }
 
   const history = recordAndAnalyzeHistory(pools, now, accountKey, {
-    persist: shouldPersistHistory,
+    persist: shouldPersistHistory && !connInfo?.readOnly,
+    readOnly: Boolean(connInfo?.readOnly),
+    seedPoints: connInfo?.seedPoints,
     hasIndependentArgonPool,
     models,
     activeModelFamilyId: activeModelHint?.modelId || '',
@@ -2657,7 +2706,7 @@ function resolveOAuthClientCredentials() {
   return { clientId: '', clientSecret: '' };
 }
 
-async function refreshOAuthAccessToken(tokenFile, authData, tokenObj) {
+async function refreshOAuthAccessToken(tokenFile, authData, tokenObj, persistToken = true) {
   const refreshToken = tokenObj?.refresh_token;
   if (!refreshToken) return null;
 
@@ -2687,7 +2736,9 @@ async function refreshOAuthAccessToken(tokenFile, authData, tokenObj) {
     tokenObj.expiry = new Date(Date.now() + Number(res.json.expires_in) * 1000).toISOString();
   }
   authData.token = tokenObj;
-  writeSecureJson(tokenFile, authData, true);
+  if (persistToken !== false) {
+    writeSecureJson(tokenFile, authData, true);
+  }
   return tokenObj.access_token;
 }
 
@@ -2772,6 +2823,7 @@ function buildUserStatusFromOAuth(email, name, loadCodeAssistData, availableMode
 }
 
 async function fetchViaOAuthToken(options = {}) {
+  const persistToken = !options.readOnly && !options.noPersist;
   const tokenEntries = findOAuthTokenFiles(options.profileDir || null);
   const selected = tokenEntries[0] || null;
   if (!selected) {
@@ -2789,7 +2841,7 @@ async function fetchViaOAuthToken(options = {}) {
   const isExpired = !accessToken || (Number.isFinite(expMs) && expMs <= Date.now() + 60_000);
 
   if (isExpired && tokenObj.refresh_token) {
-    accessToken = (await refreshOAuthAccessToken(tokenPath, authData, tokenObj)) || accessToken;
+    accessToken = (await refreshOAuthAccessToken(tokenPath, authData, tokenObj, persistToken)) || accessToken;
   }
   if (!accessToken) {
     throw new Error('OAuth token is missing or expired and could not be refreshed.');
@@ -2801,7 +2853,7 @@ async function fetchViaOAuthToken(options = {}) {
     { metadata: { ideType: 'ANTIGRAVITY' } },
   );
   if (subRes.unauthorized && tokenObj.refresh_token) {
-    const refreshed = await refreshOAuthAccessToken(tokenPath, authData, tokenObj);
+    const refreshed = await refreshOAuthAccessToken(tokenPath, authData, tokenObj, persistToken);
     if (refreshed) {
       accessToken = refreshed;
       subRes = await callCloudCodeEndpoint(
@@ -2817,7 +2869,7 @@ async function fetchViaOAuthToken(options = {}) {
 
   let quotaRes = await callCloudCodeEndpoint(accessToken, '/v1internal:retrieveUserQuotaSummary', quotaReqBody);
   if (quotaRes.unauthorized && tokenObj.refresh_token) {
-    const refreshed = await refreshOAuthAccessToken(tokenPath, authData, tokenObj);
+    const refreshed = await refreshOAuthAccessToken(tokenPath, authData, tokenObj, persistToken);
     if (refreshed) {
       accessToken = refreshed;
       quotaRes = await callCloudCodeEndpoint(accessToken, '/v1internal:retrieveUserQuotaSummary', quotaReqBody);
@@ -2861,7 +2913,10 @@ let inFlightBundlePromise = null;
 let inFlightBundleKey = '';
 
 async function executeBundleFetch(opts = {}) {
-  resolveSharedDataDir();
+  const readOnly = Boolean(opts.readOnly || opts.noPersist);
+  if (!readOnly) {
+    resolveSharedDataDir();
+  }
 
   const useOAuthOnly = Boolean(opts.oauthOnly || opts.forceOAuth);
   const profileDir = opts.profileDir ? resolve(String(opts.profileDir)) : null;
@@ -2869,18 +2924,18 @@ async function executeBundleFetch(opts = {}) {
   try {
     let fetched = null;
     if (useOAuthOnly) {
-      fetched = await fetchViaOAuthToken({ profileDir });
+      fetched = await fetchViaOAuthToken({ profileDir, readOnly });
     } else {
       let lsError = null;
       try {
-        fetched = await fetchViaLanguageServer(opts);
+        fetched = await fetchViaLanguageServer({ ...opts, readOnly });
       } catch (err) {
         lsError = err;
       }
 
       if (!fetched) {
         try {
-          fetched = await fetchViaOAuthToken({ profileDir });
+          fetched = await fetchViaOAuthToken({ profileDir, readOnly });
         } catch (oauthErr) {
           const lsMsg = lsError instanceof Error ? lsError.message : String(lsError);
           const oauthMsg = oauthErr instanceof Error ? oauthErr.message : String(oauthErr);
@@ -2891,6 +2946,8 @@ async function executeBundleFetch(opts = {}) {
 
     const snapshot = parseSnapshot(fetched.userStatusRes, fetched.quotaSummaryRes, {
       ...fetched.conn,
+      readOnly,
+      noPersist: readOnly,
       pricingLedgerPath: opts.pricingLedgerPath,
       brainDir: opts.brainDir,
       disablePricingLedger: opts.disablePricingLedger,
@@ -3210,11 +3267,12 @@ async function runCliReport(argv = []) {
   const maskEmail = argv.includes('--mask');
   const showModels = argv.includes('--models') || argv.includes('-m');
   const oauthOnly = argv.includes('--oauth');
+  const readOnly = argv.includes('--read-only') || argv.includes('--no-save-history');
   const profileDir = getFlagValue(argv, '--profile-dir');
   const watch = parseWatchOptions(argv, 30);
 
   if (!watch.enabled) {
-    const snap = await fetchQuotaSnapshot(true, { oauthOnly, profileDir });
+    const snap = await fetchQuotaSnapshot(true, { oauthOnly, profileDir, readOnly });
     console.log(formatCliReport(snap, { useColor, maskEmail, showModels }));
     return;
   }
@@ -3223,7 +3281,7 @@ async function runCliReport(argv = []) {
   while (iteration < watch.maxIterations) {
     iteration += 1;
     try {
-      const snap = await fetchQuotaSnapshot(true, { oauthOnly, profileDir });
+      const snap = await fetchQuotaSnapshot(true, { oauthOnly, profileDir, readOnly });
       if (useColor && process.stdout.isTTY && (iteration > 1 || watch.maxIterations === Infinity)) {
         process.stdout.write('\x1b[2J\x1b[H');
       } else if (iteration > 1) {
@@ -3252,19 +3310,34 @@ async function runCliReport(argv = []) {
 }
 
 // ---------------------------------------------------------------------------
-// Self-Update & Online Hot-Upgrade Engine (v1.3.0)
+// Self-Update & Online Hot-Upgrade Engine (v1.3.1 — Source-Pinned & Commit-Locked)
 // ---------------------------------------------------------------------------
 
-const QUOTA_CORE_VERSION = '1.3.0';
+const QUOTA_CORE_VERSION = '1.3.1';
 const DEFAULT_UPDATE_REPO = 'awu5425/agy-quota';
+const TRUSTED_GITHUB_API_BASE = 'https://api.github.com';
+const TRUSTED_GITHUB_RAW_BASE = 'https://raw.githubusercontent.com';
+const SAFE_GIT_REF_RE = /^(?:[0-9a-f]{40}|v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?|main)$/;
+const TEST_SOURCE_OVERRIDE_SYM = Symbol('agyQuota.testSourceOverride');
 const UPDATE_CHECK_TTL_MS = 6 * 60 * 60 * 1000;
 const UPDATE_HTTP_TIMEOUT_MS = 12_000;
 
 const RUNTIME_UPDATE_MANIFEST = Object.freeze([
   'package.json',
+  'plugin.json',
+  'cli.mjs',
+  'install.mjs',
+  'SKILL.md',
+  'scripts/agy-quota.mjs',
+  'skills/agy-quota/SKILL.md',
+  'skills/agy-quota/scripts/agy-quota.mjs',
   'src/quota-core.cjs',
   'src/overlay-preload.cjs',
   'src/meter-overlay-ui.js',
+  'src/overlay-installer.mjs',
+  'src/auto-ensure-hook.cjs',
+  'sidecars/quota_panel/package.json',
+  'sidecars/quota_panel/sidecar.json',
   'sidecars/quota_panel/main.mjs',
   'sidecars/quota_panel/app.js',
   'sidecars/quota_panel/index.html',
@@ -3279,7 +3352,18 @@ const OVERLAY_RUNTIME_FILES = Object.freeze([
 
 const SIDECAR_PLUGIN_SYNC_FILES = Object.freeze([
   'package.json',
+  'plugin.json',
+  'cli.mjs',
+  'install.mjs',
+  'skills/agy-quota/SKILL.md',
+  'skills/agy-quota/scripts/agy-quota.mjs',
   'src/quota-core.cjs',
+  'src/overlay-preload.cjs',
+  'src/meter-overlay-ui.js',
+  'src/overlay-installer.mjs',
+  'src/auto-ensure-hook.cjs',
+  'sidecars/quota_panel/package.json',
+  'sidecars/quota_panel/sidecar.json',
   'sidecars/quota_panel/main.mjs',
   'sidecars/quota_panel/app.js',
   'sidecars/quota_panel/index.html',
@@ -3856,77 +3940,93 @@ function isLikelyLocalPath(specStr) {
 }
 
 function parseUpdateSourceSpec(opts = {}) {
-  const explicitDir = opts.sourceDir || opts.mockDir || '';
-  if (explicitDir) {
-    const dir = /^file:\/\//i.test(explicitDir) ? fileURLToPath(explicitDir) : resolve(String(explicitDir));
-    return {
-      mode: 'local-dir',
-      localDir: dir,
-      repoSlug: DEFAULT_UPDATE_REPO,
-      apiBaseUrl: '',
-      rawBaseUrl: '',
-      cacheKey: `dir:${dir}`,
-    };
-  }
+  // Security boundary: untrusted HTTP/IPC/CLI/env inputs can NEVER override the
+  // canonical repository or GitHub origins. Only in-process unit tests holding
+  // the unforgeable TEST_SOURCE_OVERRIDE_SYM symbol may supply a fixture source.
+  const testOverride =
+    opts && typeof opts === 'object' ? opts[TEST_SOURCE_OVERRIDE_SYM] : null;
 
-  const rawRepo = String(opts.repo || process.env.AGY_QUOTA_UPDATE_REPO || DEFAULT_UPDATE_REPO).trim();
-  const baseOverride = String(opts.baseUrl || process.env.AGY_QUOTA_UPDATE_BASE_URL || '')
-    .trim()
-    .replace(/\/+$/, '');
-  const apiOverride = String(opts.apiBaseUrl || baseOverride || '').trim().replace(/\/+$/, '');
-  const rawOverride = String(opts.rawBaseUrl || baseOverride || '').trim().replace(/\/+$/, '');
-
-  if (isLikelyLocalPath(rawRepo)) {
-    const dir = /^file:\/\//i.test(rawRepo) ? fileURLToPath(rawRepo) : resolve(rawRepo);
-    return {
-      mode: 'local-dir',
-      localDir: dir,
-      repoSlug: DEFAULT_UPDATE_REPO,
-      apiBaseUrl: '',
-      rawBaseUrl: '',
-      cacheKey: `dir:${dir}`,
-    };
-  }
-
-  if (/^https?:\/\//i.test(rawRepo)) {
-    const parsed = new URL(rawRepo);
-    const cleanPath = parsed.pathname.replace(/^\/+|\/+$/g, '').replace(/\.git$/i, '');
-    if (parsed.hostname.toLowerCase() === 'github.com' && cleanPath.split('/').length >= 2) {
-      const repoSlug = cleanPath.split('/').slice(0, 2).join('/');
+  if (testOverride && typeof testOverride === 'object') {
+    const explicitDir = testOverride.sourceDir || testOverride.mockDir || '';
+    if (explicitDir) {
+      const dir = /^file:\/\//i.test(explicitDir)
+        ? fileURLToPath(explicitDir)
+        : resolve(String(explicitDir));
       return {
-        mode: apiOverride || rawOverride ? 'custom-http' : 'github',
-        localDir: '',
-        repoSlug,
-        apiBaseUrl: apiOverride || 'https://api.github.com',
-        rawBaseUrl: rawOverride || 'https://raw.githubusercontent.com',
-        cacheKey: `${apiOverride || 'github'}:${repoSlug}`,
+        mode: 'local-dir',
+        localDir: dir,
+        repoSlug: DEFAULT_UPDATE_REPO,
+        apiBaseUrl: '',
+        rawBaseUrl: '',
+        cacheKey: `dir:${dir}`,
       };
     }
 
-    const originBase = `${parsed.protocol}//${parsed.host}`;
-    const slug = cleanPath.split('/').filter(Boolean).length >= 2
-      ? cleanPath.split('/').filter(Boolean).slice(0, 2).join('/')
-      : DEFAULT_UPDATE_REPO;
-    const prefixBase = cleanPath && cleanPath !== slug ? `${originBase}/${cleanPath}` : originBase;
+    const repoSlug =
+      String(testOverride.repo || DEFAULT_UPDATE_REPO)
+        .trim()
+        .replace(/^\/+|\/+$/g, '')
+        .replace(/\.git$/i, '') || DEFAULT_UPDATE_REPO;
+    const apiOverride = String(testOverride.apiBaseUrl || testOverride.baseUrl || '')
+      .trim()
+      .replace(/\/+$/, '');
+    const rawOverride = String(testOverride.rawBaseUrl || testOverride.baseUrl || '')
+      .trim()
+      .replace(/\/+$/, '');
+
     return {
-      mode: 'custom-http',
+      mode: apiOverride || rawOverride ? 'custom-http' : 'github',
       localDir: '',
-      repoSlug: slug,
-      apiBaseUrl: apiOverride || prefixBase,
-      rawBaseUrl: rawOverride || prefixBase,
-      cacheKey: `http:${apiOverride || prefixBase}:${slug}`,
+      repoSlug,
+      apiBaseUrl: apiOverride || TRUSTED_GITHUB_API_BASE,
+      rawBaseUrl: rawOverride || TRUSTED_GITHUB_RAW_BASE,
+      cacheKey: `${apiOverride || 'github'}:${repoSlug}`,
     };
   }
 
-  const repoSlug = rawRepo.replace(/^\/+|\/+$/g, '').replace(/\.git$/i, '') || DEFAULT_UPDATE_REPO;
   return {
-    mode: apiOverride || rawOverride ? 'custom-http' : 'github',
+    mode: 'github',
     localDir: '',
-    repoSlug,
-    apiBaseUrl: apiOverride || 'https://api.github.com',
-    rawBaseUrl: rawOverride || 'https://raw.githubusercontent.com',
-    cacheKey: `${apiOverride || 'github'}:${repoSlug}`,
+    repoSlug: DEFAULT_UPDATE_REPO,
+    apiBaseUrl: TRUSTED_GITHUB_API_BASE,
+    rawBaseUrl: TRUSTED_GITHUB_RAW_BASE,
+    cacheKey: `github:${DEFAULT_UPDATE_REPO}`,
   };
+}
+
+async function resolveImmutableGitHubCommitSha(spec, refName, opts = {}) {
+  if (!spec || spec.mode === 'local-dir' || !spec.apiBaseUrl) return '';
+  const cleanRef = String(refName || '').trim();
+  if (!cleanRef) return '';
+  if (/^[0-9a-f]{40}$/i.test(cleanRef)) {
+    return cleanRef.toLowerCase();
+  }
+
+  const commitUrls = [
+    `${spec.apiBaseUrl}/repos/${spec.repoSlug}/commits/${encodeURIComponent(cleanRef)}`,
+  ];
+  if (spec.mode === 'custom-http') {
+    commitUrls.push(`${spec.apiBaseUrl}/commits/${encodeURIComponent(cleanRef)}`);
+  }
+
+  for (const commitUrl of commitUrls) {
+    try {
+      const res = await requestUrlText(commitUrl, {
+        ...opts,
+        accept: 'application/vnd.github+json',
+      });
+      if (res.statusCode === 200 && res.body.trim()) {
+        const json = JSON.parse(res.body);
+        const sha = typeof json?.sha === 'string' ? json.sha.trim().toLowerCase() : '';
+        if (/^[0-9a-f]{40}$/.test(sha)) {
+          return sha;
+        }
+      }
+    } catch {
+      // Fall back gracefully if GitHub API is rate-limited
+    }
+  }
+  return '';
 }
 
 function parseReleaseMetadata(releaseJson, repoSlug) {
@@ -4003,16 +4103,26 @@ async function queryRemoteVersionMetadata(spec, opts = {}) {
       if (res.statusCode === 200 && res.body.trim()) {
         const json = JSON.parse(res.body);
         const parsed = parseReleaseMetadata(json, spec.repoSlug);
-        if (parsed) return parsed;
+        if (parsed) {
+          const lockedSha = await resolveImmutableGitHubCommitSha(spec, parsed.targetRef, opts);
+          if (lockedSha) {
+            parsed.targetRef = lockedSha;
+          }
+          return parsed;
+        }
       }
     } catch (err) {
       if (!firstError) firstError = err;
     }
   }
 
-  const rawUrls = [`${spec.rawBaseUrl}/${spec.repoSlug}/main/package.json`];
+  // Lock main to an immutable 40-char commit SHA before reading package.json so
+  // subsequent multi-file downloads never mix versions across concurrent pushes.
+  const lockedMainSha = await resolveImmutableGitHubCommitSha(spec, 'main', opts);
+  const fetchRef = lockedMainSha || 'main';
+  const rawUrls = [`${spec.rawBaseUrl}/${spec.repoSlug}/${fetchRef}/package.json`];
   if (spec.mode === 'custom-http') {
-    rawUrls.push(`${spec.rawBaseUrl}/main/package.json`, `${spec.rawBaseUrl}/package.json`);
+    rawUrls.push(`${spec.rawBaseUrl}/${fetchRef}/package.json`, `${spec.rawBaseUrl}/package.json`);
   }
 
   for (const rawUrl of rawUrls) {
@@ -4024,7 +4134,10 @@ async function queryRemoteVersionMetadata(spec, opts = {}) {
       if (res.statusCode === 200 && res.body.trim()) {
         const json = JSON.parse(res.body);
         const parsed = parseRawPackageMetadata(json, spec.repoSlug, 'github-raw');
-        if (parsed) return parsed;
+        if (parsed) {
+          parsed.targetRef = fetchRef;
+          return parsed;
+        }
       } else if (!firstError && res.statusCode > 0) {
         firstError = new Error(`HTTP ${res.statusCode} querying ${rawUrl}`);
       }
@@ -4252,6 +4365,45 @@ function isProtectedDevWorkspace(dirPath) {
   return false;
 }
 
+function collectSkillUpdateTargets(opts = {}, pluginDir = '') {
+  const candidates = [];
+  const seen = new Set();
+  const pushSkillCandidate = (rawDir) => {
+    if (!rawDir) return;
+    const resolved = resolve(String(rawDir));
+    const key = platform() === 'win32' ? resolved.toLowerCase() : resolved;
+    if (seen.has(key)) return;
+    if (pluginDir) {
+      const pKey = platform() === 'win32' ? resolve(pluginDir).toLowerCase() : resolve(pluginDir);
+      if (key === pKey) return;
+    }
+    seen.add(key);
+    const runtimeDir = existsSync(join(resolved, 'runtime', 'package.json'))
+      ? join(resolved, 'runtime')
+      : resolved;
+    candidates.push({ skillBaseDir: resolved, skillRuntimeDir: runtimeDir });
+  };
+
+  if (opts.skillDir) {
+    pushSkillCandidate(opts.skillDir);
+    return candidates;
+  }
+
+  if (process.env.AGY_QUOTA_SKILL_DIR) {
+    pushSkillCandidate(process.env.AGY_QUOTA_SKILL_DIR);
+  }
+
+  const ownRoot = resolve(__dirname, '..');
+  if (basename(ownRoot).toLowerCase() === 'runtime' && existsSync(join(dirname(ownRoot), 'SKILL.md'))) {
+    pushSkillCandidate(dirname(ownRoot));
+  } else if (existsSync(join(ownRoot, 'SKILL.md')) && !isProtectedDevWorkspace(ownRoot)) {
+    pushSkillCandidate(ownRoot);
+  }
+
+  pushSkillCandidate(join(homedir(), '.gemini', 'config', 'skills', 'agy-quota'));
+  return candidates;
+}
+
 function resolveRuntimeUpdateTargets(opts = {}) {
   const overlayDirs = [];
   if (opts.overlayDir) {
@@ -4269,25 +4421,61 @@ function resolveRuntimeUpdateTargets(opts = {}) {
     ? resolve(String(opts.pluginDir))
     : join(homedir(), '.gemini', 'config', 'plugins', 'agy-quota');
 
-  const skillBaseDir = opts.skillDir
-    ? resolve(String(opts.skillDir))
-    : join(homedir(), '.gemini', 'config', 'skills', 'agy-quota');
-  const skillRuntimeDir = existsSync(join(skillBaseDir, 'runtime', 'package.json'))
-    ? join(skillBaseDir, 'runtime')
-    : skillBaseDir;
+  const skillTargets = collectSkillUpdateTargets(opts, pluginDir);
+  const firstSkill = skillTargets[0] || {
+    skillBaseDir: join(homedir(), '.gemini', 'config', 'skills', 'agy-quota'),
+    skillRuntimeDir: join(homedir(), '.gemini', 'config', 'skills', 'agy-quota'),
+  };
 
-  return { overlayDirs, pluginDir, skillBaseDir, skillRuntimeDir };
+  return {
+    overlayDirs,
+    pluginDir,
+    skillBaseDir: firstSkill.skillBaseDir,
+    skillRuntimeDir: firstSkill.skillRuntimeDir,
+    skillTargets,
+  };
+}
+
+function verifyStagedVersionConsistency(stagedContents, expectedVersion) {
+  const pluginEntry = stagedContents.get('plugin.json');
+  if (pluginEntry) {
+    const pluginJson = JSON.parse(pluginEntry.content);
+    const pluginVer = normalizeVersionString(pluginJson?.version);
+    if (pluginVer && pluginVer !== expectedVersion) {
+      throw new Error(
+        `Version mismatch across staged update files: package.json=${expectedVersion} vs plugin.json=${pluginVer}`,
+      );
+    }
+  }
+
+  const versionPatterns = [
+    ['src/quota-core.cjs', /const\s+QUOTA_CORE_VERSION\s*=\s*['"]([^'"]+)['"]/],
+    ['src/meter-overlay-ui.js', /const\s+OVERLAY_VERSION\s*=\s*['"]([^'"]+)['"]/],
+    ['sidecars/quota_panel/app.js', /const\s+APP_VERSION\s*=\s*['"]([^'"]+)['"]/],
+  ];
+  for (const [relPath, regex] of versionPatterns) {
+    const entry = stagedContents.get(relPath);
+    if (!entry) continue;
+    const match = entry.content.match(regex);
+    if (match && normalizeVersionString(match[1]) !== expectedVersion) {
+      throw new Error(
+        `Version mismatch across staged update files: package.json=${expectedVersion} vs ${relPath}=${match[1]}`,
+      );
+    }
+  }
 }
 
 async function applySelfUpdate(opts = {}) {
   const options = opts && typeof opts === 'object' ? opts : {};
   const dryRun = Boolean(options.dryRun);
+  const hasTestOverride = Boolean(options[TEST_SOURCE_OVERRIDE_SYM]);
   const previousVersion = resolveCurrentVersion(options);
   const spec = parseUpdateSourceSpec(options);
 
-  let resolvedRef = typeof options.targetRef === 'string' && options.targetRef.trim()
-    ? options.targetRef.trim()
-    : '';
+  let resolvedRef =
+    hasTestOverride && typeof options.targetRef === 'string' && options.targetRef.trim()
+      ? options.targetRef.trim()
+      : '';
 
   if (!resolvedRef) {
     const checkRes = await checkSelfUpdate({
@@ -4295,7 +4483,39 @@ async function applySelfUpdate(opts = {}) {
       force: options.force !== undefined ? Boolean(options.force) : true,
       noPersist: dryRun || Boolean(options.noPersist),
     });
-    resolvedRef = checkRes.ok && checkRes.targetRef ? checkRes.targetRef : 'main';
+    if (!checkRes.ok) {
+      return {
+        ok: false,
+        dryRun,
+        previousVersion,
+        updatedVersion: null,
+        targetRef: null,
+        updatedTargets: [],
+        overlayUiCode: null,
+        error: checkRes.error || 'Failed checking remote update metadata',
+      };
+    }
+    resolvedRef = checkRes.targetRef || 'main';
+  }
+
+  if (resolvedRef === 'main' && spec.mode !== 'local-dir') {
+    const lockedSha = await resolveImmutableGitHubCommitSha(spec, 'main', options);
+    if (lockedSha) {
+      resolvedRef = lockedSha;
+    }
+  }
+
+  if (!hasTestOverride && !SAFE_GIT_REF_RE.test(resolvedRef)) {
+    return {
+      ok: false,
+      dryRun,
+      previousVersion,
+      updatedVersion: null,
+      targetRef: null,
+      updatedTargets: [],
+      overlayUiCode: null,
+      error: `Rejected unsafe update target ref: "${resolvedRef}"`,
+    };
   }
 
   const stagingDir = join(
@@ -4329,6 +4549,8 @@ async function applySelfUpdate(opts = {}) {
       throw new Error('Staged package.json is missing a valid semver version');
     }
 
+    verifyStagedVersionConsistency(stagedContents, updatedVersion);
+
     for (const relPath of RUNTIME_UPDATE_MANIFEST) {
       const ext = extname(relPath).toLowerCase();
       if (ext === '.js' || ext === '.cjs' || ext === '.mjs') {
@@ -4338,26 +4560,25 @@ async function applySelfUpdate(opts = {}) {
     }
 
     const overlayUiCode = stagedContents.get('src/meter-overlay-ui.js').content;
-    const { overlayDirs, pluginDir, skillBaseDir, skillRuntimeDir } =
-      resolveRuntimeUpdateTargets(options);
+    const { overlayDirs, pluginDir, skillTargets } = resolveRuntimeUpdateTargets(options);
 
     const activeOverlayDirs = overlayDirs.filter(
       (dir) => existsSync(dir) && !isProtectedDevWorkspace(dir),
     );
     const activePluginDir =
       existsSync(pluginDir) && !isProtectedDevWorkspace(pluginDir) ? pluginDir : null;
-    const activeSkillRuntimeDir =
-      existsSync(skillRuntimeDir) &&
-      existsSync(join(skillRuntimeDir, 'src', 'quota-core.cjs')) &&
-      !isProtectedDevWorkspace(skillBaseDir) &&
-      !isProtectedDevWorkspace(skillRuntimeDir)
-        ? skillRuntimeDir
-        : null;
+    const activeSkillTargets = (skillTargets || []).filter(
+      ({ skillBaseDir, skillRuntimeDir }) =>
+        existsSync(skillBaseDir) &&
+        existsSync(join(skillRuntimeDir, 'src', 'quota-core.cjs')) &&
+        !isProtectedDevWorkspace(skillBaseDir) &&
+        !isProtectedDevWorkspace(skillRuntimeDir),
+    );
 
     const wouldUpdateTargets = [
       ...activeOverlayDirs,
       ...(activePluginDir ? [activePluginDir] : []),
-      ...(activeSkillRuntimeDir ? [activeSkillRuntimeDir] : []),
+      ...activeSkillTargets.map((t) => t.skillBaseDir),
     ];
 
     if (dryRun) {
@@ -4371,6 +4592,21 @@ async function applySelfUpdate(opts = {}) {
         wouldUpdateTargets,
         validatedFiles: [...RUNTIME_UPDATE_MANIFEST],
         overlayUiCode,
+      };
+    }
+
+    if (wouldUpdateTargets.length === 0 && !options.allowZeroTargets) {
+      return {
+        ok: false,
+        noTargets: true,
+        dryRun: false,
+        previousVersion,
+        updatedVersion: null,
+        targetRef: resolvedRef,
+        updatedTargets: [],
+        overlayUiCode: null,
+        error:
+          'No writable installed runtime targets found (git development workspaces are protected; use `git pull` or install `--skill`, `--top-right`, or `--sidecar` first).',
       };
     }
 
@@ -4414,23 +4650,27 @@ async function applySelfUpdate(opts = {}) {
       updatedTargets.push(activePluginDir);
     }
 
-    if (activeSkillRuntimeDir) {
+    for (const { skillBaseDir, skillRuntimeDir } of activeSkillTargets) {
       for (const relPath of RUNTIME_UPDATE_MANIFEST) {
         const stagedEntry = stagedContents.get(relPath);
-        const destPath = join(activeSkillRuntimeDir, ...relPath.split('/'));
+        const destPath = join(skillRuntimeDir, ...relPath.split('/'));
         atomicWriteFileSync(destPath, stagedEntry.content);
       }
-      const skillPluginManifestPath = join(activeSkillRuntimeDir, 'plugin.json');
-      const skillPluginManifest = readJsonSafe(skillPluginManifestPath);
-      if (skillPluginManifest && typeof skillPluginManifest === 'object') {
-        skillPluginManifest.version = updatedVersion;
-        atomicWriteFileSync(
-          skillPluginManifestPath,
-          `${JSON.stringify(skillPluginManifest, null, 2)}\n`,
-        );
+      if (resolve(skillBaseDir).toLowerCase() !== resolve(skillRuntimeDir).toLowerCase()) {
+        const skillMdEntry = stagedContents.get('skills/agy-quota/SKILL.md') || stagedContents.get('SKILL.md');
+        const runnerEntry =
+          stagedContents.get('skills/agy-quota/scripts/agy-quota.mjs') ||
+          stagedContents.get('scripts/agy-quota.mjs');
+        if (skillMdEntry) {
+          atomicWriteFileSync(join(skillBaseDir, 'SKILL.md'), skillMdEntry.content);
+        }
+        if (runnerEntry) {
+          atomicWriteFileSync(join(skillBaseDir, 'scripts', 'agy-quota.mjs'), runnerEntry.content);
+        }
+        atomicWriteFileSync(join(skillBaseDir, 'installed-version.json'), versionRecord);
       }
-      atomicWriteFileSync(join(activeSkillRuntimeDir, 'installed-version.json'), versionRecord);
-      updatedTargets.push(activeSkillRuntimeDir);
+      atomicWriteFileSync(join(skillRuntimeDir, 'installed-version.json'), versionRecord);
+      updatedTargets.push(skillBaseDir);
     }
 
     if (!options.noPersist) {
@@ -4485,13 +4725,12 @@ async function runUpdateCli(argv = []) {
   const jsonOutput = argv.includes('--json');
   const dryRun = argv.includes('--dry-run');
   const force = argv.includes('--force') || !argv.includes('--cached');
-  const repo = getFlagValue(argv, '--repo') || undefined;
-  const targetRef = getFlagValue(argv, '--target-ref') || getFlagValue(argv, '--ref') || undefined;
+  const skillDir = getFlagValue(argv, '--skill-dir') || undefined;
   const useColor = !argv.includes('--no-color') && !process.env.NO_COLOR;
   const c = createAnsiHelpers(Boolean(useColor));
 
   if (!isApply) {
-    const checkRes = await checkSelfUpdate({ force, repo });
+    const checkRes = await checkSelfUpdate({ force });
     if (jsonOutput) {
       console.log(JSON.stringify(checkRes, null, 2));
     } else if (!checkRes.ok) {
@@ -4515,8 +4754,8 @@ async function runUpdateCli(argv = []) {
     return checkRes;
   }
 
-  if (!argv.includes('--force') && !dryRun && !targetRef) {
-    const preCheck = await checkSelfUpdate({ force: true, repo });
+  if (!argv.includes('--force') && !dryRun) {
+    const preCheck = await checkSelfUpdate({ force: true });
     if (preCheck.ok && !preCheck.hasUpdate) {
       const noopRes = {
         ok: true,
@@ -4538,10 +4777,9 @@ async function runUpdateCli(argv = []) {
   }
 
   const applyRes = await applySelfUpdate({
-    repo,
-    targetRef,
     dryRun,
     force: argv.includes('--force'),
+    ...(skillDir ? { skillDir } : {}),
   });
 
   if (jsonOutput) {
@@ -4603,8 +4841,11 @@ function readHttpJsonBody(req, maxBytes = 256 * 1024) {
   });
 }
 
-const STANDALONE_PRELOAD_JS = `(function () {
-  if (window.sidecar) return;
+function buildStandalonePreloadScript(csrfToken = '') {
+  const tokenLine = csrfToken
+    ? `  window.__AGY_QUOTA_CSRF_TOKEN__ = ${JSON.stringify(csrfToken)};\n`
+    : '';
+  return `(function () {\n${tokenLine}  if (window.sidecar) return;
   const params = new URLSearchParams(window.location.search);
   window.sidecar = {
     conversationId: params.get('conversationId') || '',
@@ -4614,12 +4855,138 @@ const STANDALONE_PRELOAD_JS = `(function () {
     ui: { toggleAuxPane() {}, toggleConversation() {} }
   };
 })();`;
+}
+
+const STANDALONE_PRELOAD_JS = buildStandalonePreloadScript('');
+
+function isLoopbackHostName(hostInput) {
+  const cleaned = String(hostInput || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '');
+  return (
+    cleaned === '' ||
+    cleaned === '127.0.0.1' ||
+    cleaned === 'localhost' ||
+    cleaned === '::1' ||
+    cleaned === '::ffff:127.0.0.1'
+  );
+}
+
+function isLoopbackSocket(req) {
+  const addr = String(req?.socket?.remoteAddress || '').trim().toLowerCase();
+  if (!addr) return false;
+  return (
+    addr === '127.0.0.1' ||
+    addr === '::1' ||
+    addr === '::ffff:127.0.0.1'
+  );
+}
+
+function safeTokenEquals(provided, expected) {
+  if (typeof provided !== 'string' || typeof expected !== 'string') return false;
+  if (!provided || !expected) return false;
+  const bufA = Buffer.from(provided, 'utf8');
+  const bufB = Buffer.from(expected, 'utf8');
+  if (bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
+}
+
+function extractRequestAuthToken(req) {
+  const headerToken = req?.headers?.['x-agy-quota-token'];
+  if (typeof headerToken === 'string' && headerToken.trim()) {
+    return headerToken.trim();
+  }
+  const authHeader = req?.headers?.authorization;
+  if (typeof authHeader === 'string') {
+    const bearer = authHeader.match(/^Bearer\s+(.+)$/i);
+    if (bearer && bearer[1].trim()) {
+      return bearer[1].trim();
+    }
+  }
+  return '';
+}
+
+function verifySameOriginHeaders(req) {
+  const secFetchSite = String(req?.headers?.['sec-fetch-site'] || '').trim().toLowerCase();
+  if (secFetchSite && secFetchSite !== 'same-origin' && secFetchSite !== 'none') {
+    return { ok: false, reason: 'Cross-site request blocked (Sec-Fetch-Site)' };
+  }
+  const originHeader = String(req?.headers?.origin || '').trim();
+  if (originHeader) {
+    try {
+      const originUrl = new URL(originHeader);
+      const reqHost = String(req?.headers?.host || '').trim().toLowerCase();
+      if (!reqHost || originUrl.host.toLowerCase() !== reqHost) {
+        return { ok: false, reason: 'Cross-origin request blocked (Origin mismatch)' };
+      }
+    } catch {
+      return { ok: false, reason: 'Invalid Origin header' };
+    }
+  }
+  return { ok: true, reason: '' };
+}
 
 function createStandaloneHandler(assetsDir, runtimeOpts = {}) {
   const readAsset = (filename) => readFileSync(join(assetsDir, filename), 'utf8');
+  const listenHost = String(runtimeOpts.listenHost || '127.0.0.1').trim();
+  const isBoundLoopbackOnly = isLoopbackHostName(listenHost);
+  const explicitAdminToken =
+    typeof runtimeOpts.adminToken === 'string' && runtimeOpts.adminToken.trim()
+      ? runtimeOpts.adminToken.trim()
+      : '';
+  const localCsrfToken = randomBytes(32).toString('hex');
+
   const sendJson = (res, statusCode, payload) => {
-    res.writeHead(statusCode, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.writeHead(statusCode, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store',
+    });
     res.end(JSON.stringify(payload));
+  };
+
+  const authorizeUpdateRequest = (req) => {
+    const originCheck = verifySameOriginHeaders(req);
+    if (!originCheck.ok) {
+      return { ok: false, statusCode: 403, error: originCheck.reason };
+    }
+
+    const providedToken = extractRequestAuthToken(req);
+    const socketIsLoopback = isLoopbackSocket(req);
+
+    // Non-loopback bind (e.g. --host 0.0.0.0) or remote socket: disabled by default
+    // unless operator explicitly configured --admin-token AND caller authenticates.
+    if (!isBoundLoopbackOnly || !socketIsLoopback) {
+      if (!explicitAdminToken) {
+        return {
+          ok: false,
+          statusCode: 403,
+          error:
+            'Self-update endpoints are disabled when bound to non-loopback interfaces (pass --admin-token to authorize).',
+        };
+      }
+      if (!safeTokenEquals(providedToken, explicitAdminToken)) {
+        return {
+          ok: false,
+          statusCode: 401,
+          error: 'Unauthorized: valid X-AGY-Quota-Token or Bearer token required.',
+        };
+      }
+      return { ok: true };
+    }
+
+    // Loopback server + loopback socket: require matching CSRF token (or explicit adminToken)
+    if (
+      safeTokenEquals(providedToken, localCsrfToken) ||
+      (explicitAdminToken && safeTokenEquals(providedToken, explicitAdminToken))
+    ) {
+      return { ok: true };
+    }
+    return {
+      ok: false,
+      statusCode: 403,
+      error: 'Forbidden: missing or invalid X-AGY-Quota-Token header.',
+    };
   };
 
   return async (req, res) => {
@@ -4641,8 +5008,12 @@ function createStandaloneHandler(assetsDir, runtimeOpts = {}) {
       return;
     }
     if (req.method === 'GET' && url.pathname === '/preload.js') {
-      res.writeHead(200, { 'Content-Type': 'application/javascript; charset=utf-8' });
-      res.end(STANDALONE_PRELOAD_JS);
+      const canIssueLocalToken = isBoundLoopbackOnly && isLoopbackSocket(req);
+      res.writeHead(200, {
+        'Content-Type': 'application/javascript; charset=utf-8',
+        'Cache-Control': 'no-store',
+      });
+      res.end(buildStandalonePreloadScript(canIssueLocalToken ? localCsrfToken : ''));
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/quota') {
@@ -4660,6 +5031,11 @@ function createStandaloneHandler(assetsDir, runtimeOpts = {}) {
       return;
     }
     if ((req.method === 'POST' || req.method === 'GET') && url.pathname === '/api/update/check') {
+      const auth = authorizeUpdateRequest(req);
+      if (!auth.ok) {
+        sendJson(res, auth.statusCode, { ok: false, error: auth.error });
+        return;
+      }
       let body = {};
       if (req.method === 'POST') {
         try {
@@ -4674,15 +5050,17 @@ function createStandaloneHandler(assetsDir, runtimeOpts = {}) {
         body.force === '1' ||
         url.searchParams.get('force') === '1' ||
         url.searchParams.get('force') === 'true';
-      const checkRes = await checkSelfUpdate({
-        force,
-        currentVersion: body.currentVersion || url.searchParams.get('currentVersion') || undefined,
-        repo: body.repo || url.searchParams.get('repo') || undefined,
-      });
+      // Strictly ignore any user-supplied repo / baseUrl / targetRef / paths
+      const checkRes = await checkSelfUpdate({ force });
       sendJson(res, 200, { ...checkRes, prefs: getUpdatePrefs() });
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/update/prefs') {
+      const auth = authorizeUpdateRequest(req);
+      if (!auth.ok) {
+        sendJson(res, auth.statusCode, { ok: false, error: auth.error });
+        return;
+      }
       let body = {};
       try {
         body = await readHttpJsonBody(req);
@@ -4690,12 +5068,21 @@ function createStandaloneHandler(assetsDir, runtimeOpts = {}) {
         sendJson(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) });
         return;
       }
-      const patch = body.prefs && typeof body.prefs === 'object' ? body.prefs : body;
-      const prefs = setUpdatePrefs(patch);
+      const rawPatch = body.prefs && typeof body.prefs === 'object' ? body.prefs : body;
+      const safePatch = {};
+      if (typeof rawPatch.autoUpdate === 'boolean') safePatch.autoUpdate = rawPatch.autoUpdate;
+      if (typeof rawPatch.skippedVersion === 'string') safePatch.skippedVersion = rawPatch.skippedVersion;
+      if (typeof rawPatch.channel === 'string') safePatch.channel = rawPatch.channel;
+      const prefs = setUpdatePrefs(safePatch);
       sendJson(res, 200, { ok: true, prefs, ...prefs });
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/update/apply') {
+      const auth = authorizeUpdateRequest(req);
+      if (!auth.ok) {
+        sendJson(res, auth.statusCode, { ok: false, error: auth.error });
+        return;
+      }
       let body = {};
       try {
         body = await readHttpJsonBody(req);
@@ -4703,12 +5090,11 @@ function createStandaloneHandler(assetsDir, runtimeOpts = {}) {
         sendJson(res, 400, { ok: false, error: err instanceof Error ? err.message : String(err) });
         return;
       }
+      // Strictly ignore any user-supplied repo / targetRef / sourceDir / target paths
       const applyRes = await applySelfUpdate({
-        repo: body.repo || undefined,
-        targetRef: body.targetRef || undefined,
         dryRun: body.dryRun === true || body.dryRun === '1',
       });
-      sendJson(res, 200, applyRes);
+      sendJson(res, applyRes.ok ? 200 : 400, applyRes);
       return;
     }
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -4720,6 +5106,7 @@ module.exports = {
   VERSION: QUOTA_CORE_VERSION,
   QUOTA_CORE_VERSION,
   DEFAULT_UPDATE_REPO,
+  TEST_SOURCE_OVERRIDE_SYM,
   UPDATE_CHECK_TTL_MS,
   RUNTIME_UPDATE_MANIFEST,
   QUOTA_POOLS,

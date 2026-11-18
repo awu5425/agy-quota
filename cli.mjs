@@ -14,9 +14,9 @@ const OVERLAY_SCRIPT = join(REPO_ROOT, 'src', 'overlay-installer.mjs');
 function getPackageVersion() {
   try {
     const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
-    return pkg.version || '1.3.0';
+    return pkg.version || '1.3.1';
   } catch {
-    return '1.3.0';
+    return '1.3.1';
   }
 }
 
@@ -30,17 +30,19 @@ Usage:
   agy-quota --models, -m                 Include deduplicated per-model quota breakdown
   agy-quota --mask                       Mask account email (e.g. bi***@gmail.com)
   agy-quota --no-color                   Disable ANSI colors (also honors NO_COLOR)
+  agy-quota --read-only                  Stateless query (skip writing cache, history & refreshed OAuth token)
   agy-quota --oauth                      Force Cloud Code OAuth API fallback
   agy-quota --profile-dir <dir>          Target profile home for OAuth fallback
   agy-quota --json | --dump              Output full quota snapshot as JSON
-  agy-quota --standalone [--host <addr>] [--port <n>]
+  agy-quota --standalone [--host <addr>] [--port <n>] [--admin-token <tok>]
                                          Start standalone local HTTP dashboard server
 
 1) Desktop Top-Right Semi-Ring Overlay (Standalone HUD or Context Meter Companion):
   agy-quota --top-right [--asar <path>]  Install/update top-right semi-ring board & hot-mount via CDP
-                                         (Works standalone WITH OR WITHOUT antigravity-context-viewer!)
+                                         (Leaves other third-party tools untouched by default!)
   agy-quota --meter-overlay              Alias for --top-right
   agy-quota --top-right --keep-sidecar   Install top-right HUD while ALSO keeping the native right sidecar
+  agy-quota --top-right --migrate-capsule Opt in to backing up & retiring legacy context-capsule (restored on uninstall)
   agy-quota --ensure [--quiet]           Verify ASAR hooks (and companion Context Meter) and self-heal if wiped
   agy-quota --overlay-status [--json]    Inspect ASAR hook, runtime bundle, backup & sidecar status
   agy-quota --uninstall-overlay          Remove ASAR preload hook & top-right overlay cleanly

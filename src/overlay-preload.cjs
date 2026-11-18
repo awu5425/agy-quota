@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * AGY Quota Top-Right & Companion Preload Bridge (overlay-preload.cjs — v1.3.0)
+ * AGY Quota Top-Right & Companion Preload Bridge (overlay-preload.cjs — v1.3.1)
  *
  * Runs inside Electron's Preload context (CommonJS) with strict fail-open
  * protection so any unexpected runtime error never blocks the host window.
@@ -35,7 +35,7 @@
     }
 
     const { contextBridge, ipcRenderer, webFrame } = electron;
-    const DEFAULT_OVERLAY_VERSION = '1.3.0';
+    const DEFAULT_OVERLAY_VERSION = '1.3.1';
     const DEFAULT_UPDATE_PREFS = Object.freeze({
       autoUpdate: true,
       lastCheckedAt: 0,
@@ -326,10 +326,13 @@
               error: 'update engine unavailable',
             };
           }
-          const safeOpts = opts && typeof opts === 'object' ? { ...opts } : {};
-          if (!safeOpts.currentVersion) {
-            safeOpts.currentVersion = currentVersion;
-          }
+          const safeOpts = {
+            force: Boolean(opts && typeof opts === 'object' ? opts.force : opts),
+            currentVersion:
+              opts && typeof opts === 'object' && typeof opts.currentVersion === 'string' && opts.currentVersion.trim()
+                ? opts.currentVersion.trim()
+                : currentVersion,
+          };
           const result = await fn(safeOpts);
           return (
             toPlainCloneable(result) || {
@@ -365,7 +368,9 @@
               error: 'update engine unavailable',
             };
           }
-          const safeOpts = opts && typeof opts === 'object' ? { ...opts } : {};
+          const safeOpts = {
+            dryRun: Boolean(opts && typeof opts === 'object' && opts.dryRun),
+          };
           const result = await fn(safeOpts);
           if (result && result.ok && !safeOpts.dryRun) {
             reloadQuotaCoreSafe();

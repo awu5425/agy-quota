@@ -1,7 +1,17 @@
 #!/usr/bin/env node
 
 import { execFileSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import http from 'node:http';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -13,57 +23,107 @@ const REPO_ROOT = resolve(dirname(__filename));
 export const DEFAULT_SIDECAR_TARGET = join(homedir(), '.gemini', 'config', 'plugins', PLUGIN_DIR_NAME);
 export const DEFAULT_SKILL_TARGET = join(homedir(), '.gemini', 'config', 'skills', PLUGIN_DIR_NAME);
 
-export const SIDECAR_COPY_ENTRIES = [
+export const CANONICAL_BUNDLE_FILES = Object.freeze([
   'package.json',
   'plugin.json',
   'cli.mjs',
   'install.mjs',
+  'SKILL.md',
   'README.md',
   'README.zh-CN.md',
   'LICENSE',
   'NOTICE',
-  'assets',
-  'skills',
-  join('src', 'quota-core.cjs'),
-  join('src', 'overlay-preload.cjs'),
-  join('src', 'meter-overlay-ui.js'),
-  join('src', 'overlay-installer.mjs'),
-  join('src', 'auto-ensure-hook.cjs'),
-  join('sidecars', 'quota_panel', 'package.json'),
-  join('sidecars', 'quota_panel', 'sidecar.json'),
-  join('sidecars', 'quota_panel', 'main.mjs'),
-  join('sidecars', 'quota_panel', 'index.html'),
-  join('sidecars', 'quota_panel', 'styles.css'),
-  join('sidecars', 'quota_panel', 'app.js'),
-];
+  'assets/logo.svg',
+  'scripts/agy-quota.mjs',
+  'skills/agy-quota/SKILL.md',
+  'skills/agy-quota/scripts/agy-quota.mjs',
+  'src/quota-core.cjs',
+  'src/overlay-preload.cjs',
+  'src/meter-overlay-ui.js',
+  'src/overlay-installer.mjs',
+  'src/auto-ensure-hook.cjs',
+  'sidecars/quota_panel/package.json',
+  'sidecars/quota_panel/sidecar.json',
+  'sidecars/quota_panel/main.mjs',
+  'sidecars/quota_panel/index.html',
+  'sidecars/quota_panel/styles.css',
+  'sidecars/quota_panel/app.js',
+]);
 
-export const SKILL_RUNTIME_ENTRIES = [
-  'package.json',
-  'plugin.json',
-  'cli.mjs',
-  'install.mjs',
-  'LICENSE',
-  'NOTICE',
-  'assets',
-  join('src', 'quota-core.cjs'),
-  join('src', 'overlay-preload.cjs'),
-  join('src', 'meter-overlay-ui.js'),
-  join('src', 'overlay-installer.mjs'),
-  join('src', 'auto-ensure-hook.cjs'),
-  join('sidecars', 'quota_panel', 'package.json'),
-  join('sidecars', 'quota_panel', 'sidecar.json'),
-  join('sidecars', 'quota_panel', 'main.mjs'),
-  join('sidecars', 'quota_panel', 'index.html'),
-  join('sidecars', 'quota_panel', 'styles.css'),
-  join('sidecars', 'quota_panel', 'app.js'),
-];
+export const SIDECAR_COPY_ENTRIES = CANONICAL_BUNDLE_FILES;
+export const SKILL_RUNTIME_ENTRIES = CANONICAL_BUNDLE_FILES;
 
-function readRepoVersion() {
+function readRepoVersion(sourceRoot = REPO_ROOT) {
   try {
-    const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
-    return pkg.version || '1.3.0';
+    const pkg = JSON.parse(readFileSync(join(sourceRoot, 'package.json'), 'utf8'));
+    return pkg.version || '1.3.1';
   } catch {
-    return '1.3.0';
+    return '1.3.1';
+  }
+}
+
+export function verifyManifestComplete(sourceRoot = REPO_ROOT, entries = CANONICAL_BUNDLE_FILES) {
+  const root = resolve(sourceRoot);
+  const missing = [];
+  for (const relPath of entries) {
+    const full = join(root, ...String(relPath).split(/[\\/]+/));
+    if (!existsSync(full)) {
+      missing.push(relPath);
+      continue;
+    }
+    const st = statSync(full);
+    if (st.isFile() && st.size === 0) {
+      missing.push(`${relPath} (empty)`);
+    }
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `Bundle integrity check failed in ${root}; missing required files: ${missing.join(', ')}`,
+    );
+  }
+}
+
+export function moveDirectorySafe(srcDir, dstDir) {
+  mkdirSync(dirname(dstDir), { recursive: true });
+  try {
+    renameSync(srcDir, dstDir);
+  } catch (err) {
+    const code = err && err.code;
+    if (code === 'EXDEV' || code === 'EPERM' || code === 'EBUSY' || code === 'EACCES') {
+      cpSync(srcDir, dstDir, { recursive: true, force: true });
+      rmSync(srcDir, { recursive: true, force: true });
+    } else {
+      throw err;
+    }
+  }
+}
+
+function atomicCommitStagedDirectory(stageDir, resolvedTarget) {
+  const parentDir = dirname(resolvedTarget);
+  mkdirSync(parentDir, { recursive: true });
+  const backupDir = `${resolvedTarget}.bak-${process.pid}-${Date.now()}`;
+  let hadExisting = false;
+
+  if (existsSync(resolvedTarget)) {
+    hadExisting = true;
+    moveDirectorySafe(resolvedTarget, backupDir);
+  }
+
+  try {
+    moveDirectorySafe(stageDir, resolvedTarget);
+  } catch (err) {
+    if (hadExisting && existsSync(backupDir) && !existsSync(resolvedTarget)) {
+      try {
+        moveDirectorySafe(backupDir, resolvedTarget);
+      } catch {
+        // preserve backupDir on disk if restore also failed
+      }
+    }
+    throw err;
+  }
+
+  if (hadExisting && existsSync(backupDir)) {
+    rmSync(backupDir, { recursive: true, force: true });
   }
 }
 
@@ -147,40 +207,57 @@ export async function stopOrphanedQuotaPanelSidecars() {
   }
 }
 
-export function installSidecarPlugin({ target = DEFAULT_SIDECAR_TARGET } = {}) {
+export function installSidecarPlugin({
+  target = DEFAULT_SIDECAR_TARGET,
+  sourceRoot = REPO_ROOT,
+} = {}) {
+  const resolvedSource = resolve(sourceRoot);
   const resolvedTarget = resolve(target);
-  mkdirSync(resolvedTarget, { recursive: true });
 
-  for (const relPath of SIDECAR_COPY_ENTRIES) {
-    const src = join(REPO_ROOT, relPath);
-    if (!existsSync(src)) {
-      throw new Error(`Missing source file or directory: ${src}`);
+  // Pre-flight completeness check BEFORE touching target directory
+  verifyManifestComplete(resolvedSource, SIDECAR_COPY_ENTRIES);
+
+  const parentDir = dirname(resolvedTarget);
+  mkdirSync(parentDir, { recursive: true });
+  const stageDir = join(parentDir, `.agy-quota-sidecar-stage-${process.pid}-${Date.now()}`);
+  mkdirSync(stageDir, { recursive: true });
+
+  try {
+    for (const relPath of SIDECAR_COPY_ENTRIES) {
+      const segments = String(relPath).split(/[\\/]+/);
+      const src = join(resolvedSource, ...segments);
+      const dest = join(stageDir, ...segments);
+      mkdirSync(dirname(dest), { recursive: true });
+      cpSync(src, dest, { recursive: true, force: true });
     }
-    const dest = join(resolvedTarget, relPath);
-    mkdirSync(dirname(dest), { recursive: true });
-    cpSync(src, dest, { recursive: true, force: true });
+
+    const version = readRepoVersion(resolvedSource);
+    writeFileSync(
+      join(stageDir, 'installed-version.json'),
+      JSON.stringify(
+        {
+          version,
+          mode: 'sidecar',
+          installedAt: new Date().toISOString(),
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+
+    verifyManifestComplete(stageDir, SIDECAR_COPY_ENTRIES);
+    atomicCommitStagedDirectory(stageDir, resolvedTarget);
+
+    return {
+      ok: true,
+      version,
+      target: resolvedTarget,
+    };
+  } catch (err) {
+    rmSync(stageDir, { recursive: true, force: true });
+    throw err;
   }
-
-  const version = readRepoVersion();
-  writeFileSync(
-    join(resolvedTarget, 'installed-version.json'),
-    JSON.stringify(
-      {
-        version,
-        mode: 'sidecar',
-        installedAt: new Date().toISOString(),
-      },
-      null,
-      2,
-    ),
-    'utf8',
-  );
-
-  return {
-    ok: true,
-    version,
-    target: resolvedTarget,
-  };
 }
 
 export async function uninstallSidecarPlugin({ target = DEFAULT_SIDECAR_TARGET } = {}) {
@@ -238,51 +315,64 @@ export function getSidecarPluginStatus({ target = DEFAULT_SIDECAR_TARGET } = {})
   };
 }
 
-export function installSkillBundle({ target = DEFAULT_SKILL_TARGET } = {}) {
+export function installSkillBundle({
+  target = DEFAULT_SKILL_TARGET,
+  sourceRoot = REPO_ROOT,
+} = {}) {
+  const resolvedSource = resolve(sourceRoot);
   const resolvedTarget = resolve(target);
-  mkdirSync(resolvedTarget, { recursive: true });
 
-  const skillMdSrc = join(REPO_ROOT, 'skills', 'agy-quota', 'SKILL.md');
-  const runnerSrc = join(REPO_ROOT, 'skills', 'agy-quota', 'scripts', 'agy-quota.mjs');
-  if (!existsSync(skillMdSrc) || !existsSync(runnerSrc)) {
-    throw new Error('Missing skills/agy-quota/{SKILL.md,scripts/agy-quota.mjs} in repository');
-  }
+  // Pre-flight completeness check BEFORE touching target directory
+  verifyManifestComplete(resolvedSource, SKILL_RUNTIME_ENTRIES);
 
-  cpSync(skillMdSrc, join(resolvedTarget, 'SKILL.md'), { force: true });
-  mkdirSync(join(resolvedTarget, 'scripts'), { recursive: true });
-  cpSync(runnerSrc, join(resolvedTarget, 'scripts', 'agy-quota.mjs'), { force: true });
+  const parentDir = dirname(resolvedTarget);
+  mkdirSync(parentDir, { recursive: true });
+  const stageDir = join(parentDir, `.agy-quota-skill-stage-${process.pid}-${Date.now()}`);
+  mkdirSync(stageDir, { recursive: true });
 
-  const runtimeRoot = join(resolvedTarget, 'runtime');
-  mkdirSync(runtimeRoot, { recursive: true });
-  for (const relPath of SKILL_RUNTIME_ENTRIES) {
-    const src = join(REPO_ROOT, relPath);
-    if (!existsSync(src)) {
-      throw new Error(`Missing source file or directory for skill runtime: ${src}`);
+  try {
+    const skillMdSrc = join(resolvedSource, 'skills', 'agy-quota', 'SKILL.md');
+    const runnerSrc = join(resolvedSource, 'skills', 'agy-quota', 'scripts', 'agy-quota.mjs');
+    cpSync(skillMdSrc, join(stageDir, 'SKILL.md'), { force: true });
+    mkdirSync(join(stageDir, 'scripts'), { recursive: true });
+    cpSync(runnerSrc, join(stageDir, 'scripts', 'agy-quota.mjs'), { force: true });
+
+    const stageRuntimeRoot = join(stageDir, 'runtime');
+    mkdirSync(stageRuntimeRoot, { recursive: true });
+    for (const relPath of SKILL_RUNTIME_ENTRIES) {
+      const segments = String(relPath).split(/[\\/]+/);
+      const src = join(resolvedSource, ...segments);
+      const dest = join(stageRuntimeRoot, ...segments);
+      mkdirSync(dirname(dest), { recursive: true });
+      cpSync(src, dest, { recursive: true, force: true });
     }
-    const dest = join(runtimeRoot, relPath);
-    mkdirSync(dirname(dest), { recursive: true });
-    cpSync(src, dest, { recursive: true, force: true });
-  }
 
-  const version = readRepoVersion();
-  const versionMeta = JSON.stringify(
-    {
+    const version = readRepoVersion(resolvedSource);
+    const versionMeta = JSON.stringify(
+      {
+        version,
+        mode: 'skill',
+        installedAt: new Date().toISOString(),
+      },
+      null,
+      2,
+    );
+    writeFileSync(join(stageDir, 'installed-version.json'), versionMeta, 'utf8');
+    writeFileSync(join(stageRuntimeRoot, 'installed-version.json'), versionMeta, 'utf8');
+
+    verifyManifestComplete(stageRuntimeRoot, SKILL_RUNTIME_ENTRIES);
+    atomicCommitStagedDirectory(stageDir, resolvedTarget);
+
+    return {
+      ok: true,
       version,
-      mode: 'skill',
-      installedAt: new Date().toISOString(),
-    },
-    null,
-    2,
-  );
-  writeFileSync(join(resolvedTarget, 'installed-version.json'), versionMeta, 'utf8');
-  writeFileSync(join(runtimeRoot, 'installed-version.json'), versionMeta, 'utf8');
-
-  return {
-    ok: true,
-    version,
-    target: resolvedTarget,
-    runtimeRoot,
-  };
+      target: resolvedTarget,
+      runtimeRoot: join(resolvedTarget, 'runtime'),
+    };
+  } catch (err) {
+    rmSync(stageDir, { recursive: true, force: true });
+    throw err;
+  }
 }
 
 export function uninstallSkillBundle({ target = DEFAULT_SKILL_TARGET } = {}) {

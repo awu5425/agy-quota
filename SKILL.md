@@ -24,7 +24,11 @@ Run all commands via [agy-quota.mjs](./scripts/agy-quota.mjs) relative to this `
 node "<skill_dir>/scripts/agy-quota.mjs" <args>
 ```
 
-> **Privacy rule**: Always pass `--mask` when printing or inspecting quota output unless the user explicitly asks to see their full unmasked email address.
+> **Privacy & Local State Notes**:
+> - **Mask emails by default**: Always pass `--mask` when printing or inspecting quota output unless the user explicitly asks to see their full unmasked email address.
+> - **Local cache, history & OAuth refresh behavior**: By default, quota queries update local connection cache (`~/.gemini/antigravity/agy-quota/last_ls_conn.json`, `0600`) and 90-minute rolling usage history (`quota_history.json`) to compute accurate burn rates (`pp/h`). When falling back to Cloud Code OAuth (`--oauth` or no local Language Server) and the local access token is expired, it refreshes the token via Google OAuth2 and writes the refreshed token back to `antigravity-oauth-token`.
+> - **Strict zero-write mode**: Pass `--read-only` (e.g. `node "<skill_dir>/scripts/agy-quota.mjs" --json --mask --read-only`) if the user requests a strictly stateless check with zero local file writes.
+> - **First-run subfolder bootstrap**: If installed via `npx skills add awu5425/agy-quota` without `./runtime/`, the first invocation downloads the commit-pinned runtime from `awu5425/agy-quota` on GitHub and verifies JS syntax before execution.
 
 ## Workflows
 
@@ -39,8 +43,8 @@ When the user runs `/agy-quota` with no arguments or asks how much quota remains
    *(If no local Language Server is running on a headless machine, retry with `--oauth --json --mask`.)*
 2. Summarize concisely from the JSON output:
    - **Account & Mode**: `userInfo.tier` (e.g. `Google AI Ultra` / `Google AI Pro`), masked `userInfo.email`, and `poolMode` (`2-pool` on Ultra where Carbon/Argon/Hydrogen/Flash share `Gemini`, vs `3-pool` on Pro where `Argon` has an independent weekly bucket).
-   - **Quota Pools (`pools[]`)**: `5h` remaining `%` & `resetTime`, `weekly.remaining` `%` & `weekly.resetTime`, burn rate `prediction.usageRate` (`pp/h`) & `prediction.runway`, and `familySummary`.
-   - **90m Per-Model Burn (`history.modelSummaries[]`)**: Which base models (`Carbon`, `Argon`, `Hydrogen`, `3.8 Flash`, `Opus`, `Sonnet`, `GPT-OSS`) actively consumed quota in the last 90 minutes (`totalPp`, `usageRatePp`, `calls`).
+   - **Quota Pools (`pools[]`)**: `5h` remaining `%` & `resetTime`, `weekly.remaining` `%` & `weekly.resetTime`, burn rate `prediction.usageRate` (`pp/h`, computed over actual observed elapsed span) & `prediction.runway`, and `familySummary`.
+   - **90m Per-Model Burn (`history.modelSummaries[]`)**: Which base models (`Carbon`, `Argon`, `Hydrogen`, `3.8 Flash`, `Opus`, `Sonnet`, `GPT-OSS`) actively consumed quota (`totalPp`, `usageRatePp`, `calls`).
    - **Credits (`credits`)**: `prompt`, `flow`, and `userCredits` (`Google One AI`).
    - **Budget Tip**: If any pool is below `30%` and its runway is shorter than `resetTime`, suggest switching heavy subtasks to a healthier pool (e.g. `Claude / GPT`) or lighter family (`3.8 Flash`) until reset.
 
@@ -52,6 +56,8 @@ node "<skill_dir>/scripts/agy-quota.mjs" --models --mask --no-color
 
 ### 2. Install, Verify, or Switch Desktop Quota UI
 
+> **Non-destructive guarantee**: `--top-right` leaves other third-party or legacy tools untouched by default. Only pass `--migrate-capsule` if the user explicitly asks to retire an older `context-capsule` prototype (which is backed up and automatically restored upon `--uninstall-overlay`).
+
 | User Intent | Command | Verification |
 | :--- | :--- | :--- |
 | **Install / repair Top-Right Semi-Ring HUD** (`/agy-quota top-right`) — auto-adapts to standalone top-right badge or `antigravity-context-viewer` companion, and registers the `<10ms` `SessionStart` self-heal hook | `node "<skill_dir>/scripts/agy-quota.mjs" --top-right` | Run `--overlay-status` and confirm `ACTIVE (HEALTHY)` and `auto-heal hook: active`. |
@@ -62,12 +68,14 @@ node "<skill_dir>/scripts/agy-quota.mjs" --models --mask --no-color
 
 ### 3. Online Check & Hot Self-Update (`/agy-quota update`)
 
+Updates are pinned exclusively to `awu5425/agy-quota` on GitHub and commit-locked before download:
+
 ```bash
 node "<skill_dir>/scripts/agy-quota.mjs" --check-update --force
 node "<skill_dir>/scripts/agy-quota.mjs" --update
 ```
 
-Verify exit code `0` and report the updated version and refreshed runtime targets.
+Verify exit code `0` and report the updated version and synced runtime targets (including custom `<skill_dir>` installations).
 
 ### 4. Standalone Browser Dashboard (`/agy-quota standalone`)
 
@@ -77,4 +85,4 @@ For local browser preview or headless Linux / SSH port-forwarding:
 node "<skill_dir>/scripts/agy-quota.mjs" --standalone --host 127.0.0.1 --port 4318
 ```
 
-Pass `--host 0.0.0.0` only when the user explicitly wants LAN/remote access, and verify `http://127.0.0.1:<port>/api/quota` returns HTTP `200`.
+Pass `--host 0.0.0.0` only when the user explicitly wants LAN/remote access (self-update endpoints are automatically disabled on non-loopback interfaces unless `--admin-token <secret>` is configured). Verify `http://127.0.0.1:<port>/api/quota` returns HTTP `200`.

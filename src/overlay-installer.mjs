@@ -49,9 +49,9 @@ const COMPANION_FILES = ['quota-core.cjs', 'overlay-preload.cjs', 'meter-overlay
 function readRepoVersion() {
   try {
     const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
-    return pkg.version || '1.3.0';
+    return pkg.version || '1.3.1';
   } catch {
-    return '1.3.0';
+    return '1.3.1';
   }
 }
 
@@ -233,13 +233,19 @@ export function buildOverlayPreloadSnippet() {
   ].join('\n');
 }
 
-export function transformPreloadSource(source, { mode = 'install' } = {}) {
+export function transformPreloadSource(
+  source,
+  { mode = 'install', migrateCapsule = false, restoreCapsuleBlock = '' } = {},
+) {
   if (typeof source !== 'string' || !source.length) {
     throw new Error('dist/preload.js source is empty or invalid');
   }
   let code = source;
   if (mode === 'install') {
-    code = code.replace(CAPSULE_BLOCK_RE, '\n');
+    // Non-destructive default: leave third-party/legacy tools untouched unless --migrate-capsule is explicitly requested
+    if (migrateCapsule) {
+      code = code.replace(CAPSULE_BLOCK_RE, '\n');
+    }
     code = code.replace(OVERLAY_BLOCK_RE, '\n');
     const snippet = buildOverlayPreloadSnippet();
     const meterIdx = code.indexOf(METER_PRELOAD_START_MARKER);
@@ -252,6 +258,13 @@ export function transformPreloadSource(source, { mode = 'install' } = {}) {
     }
   } else if (mode === 'uninstall') {
     code = code.replace(OVERLAY_BLOCK_RE, '\n');
+    if (
+      typeof restoreCapsuleBlock === 'string' &&
+      restoreCapsuleBlock.trim() &&
+      !code.includes('AGY_CONTEXT_CAPSULE_START')
+    ) {
+      code = `${code.replace(/\s*$/, '')}\n\n${restoreCapsuleBlock.trim()}\n`;
+    }
   } else {
     throw new Error(`Unsupported preload transform mode: ${mode}`);
   }
@@ -853,7 +866,12 @@ function buildOverlayUnmountScript() {
   })();`;
 }
 
-export async function hotMountViaCdp({ uiScriptPath, quotaCorePath = null, mode = 'install' }) {
+export async function hotMountViaCdp({
+  uiScriptPath,
+  quotaCorePath = null,
+  mode = 'install',
+  migrateCapsule = false,
+}) {
   const dtFiles = discoverDevToolsPortFiles();
   if (dtFiles.length === 0) {
     return {
@@ -885,9 +903,10 @@ export async function hotMountViaCdp({ uiScriptPath, quotaCorePath = null, mode 
   }
 
   const uiCode = mode === 'install' ? readFileSync(uiScriptPath, 'utf8') : '';
+  const capsuleCleanupPart = migrateCapsule ? `${buildCapsuleCleanupScript()}\n` : '';
   const combinedExpression =
     mode === 'install'
-      ? `${buildOverlayUnmountScript()}\n${buildCapsuleCleanupScript()}\n${preseedCode}${uiCode}`
+      ? `${buildOverlayUnmountScript()}\n${capsuleCleanupPart}${preseedCode}${uiCode}`
       : buildOverlayUnmountScript();
 
   const verifyMountExpr = `(async function () {
@@ -1321,9 +1340,10 @@ export async function installMeterOverlay(options = {}) {
   }
 
   const version = readRepoVersion();
+  const migrateCapsule = Boolean(options.migrateCapsule);
   const asarPath = discoverAsarPath(options.asarPath);
   const resourcesDir = dirname(asarPath);
-  const stateDir = resolveContextMeterStateDir();
+  const stateDir = options.stateDir ? resolve(String(options.stateDir)) : resolveContextMeterStateDir();
   const hasContextMeterStateDir = existsSync(stateDir);
   const overlayDir = join(stateDir, 'agy-quota-overlay');
 
@@ -1349,7 +1369,9 @@ export async function installMeterOverlay(options = {}) {
   );
 
   // Ensure unified shared cache & primary backups dir (~/.gemini/antigravity/agy-quota/backups/)
-  const sharedDataDir = triggerSharedDataMigration(join(overlayDir, 'quota-core.cjs'));
+  const sharedDataDir = options.sharedDataDir
+    ? resolve(String(options.sharedDataDir))
+    : triggerSharedDataMigration(join(overlayDir, 'quota-core.cjs'));
   mkdirSync(sharedDataDir, { recursive: true });
 
   let companionRestoreResult = { needed: false, restored: false };
@@ -1380,7 +1402,7 @@ export async function installMeterOverlay(options = {}) {
     } catch {
       bakHasMeter = false;
     }
-    if ((currentInspect.hasMeterManifest && !bakHasMeter) || bakHasCapsule) {
+    if ((currentInspect.hasMeterManifest && !bakHasMeter) || (migrateCapsule && bakHasCapsule)) {
       if (!existsSync(staleBakPath)) {
         renameSync(origBakPath, staleBakPath);
         quarantinedStaleBak = staleBakPath;
@@ -1413,25 +1435,67 @@ export async function installMeterOverlay(options = {}) {
     writeBackupArtifacts(legacyBackupsDir, preOverlayBakPath, currentInspect.hostVersion);
   }
 
-  // Safety Rule 2: Backup & neutralize ~/.gemini/tools/context-capsule-payload.js if present
-  const capsulePayloadPath = join(homedir(), '.gemini', 'tools', 'context-capsule-payload.js');
+  // Opt-in Legacy Migration (--migrate-capsule):
+  // By default, external/legacy tools (such as context-capsule) are left 100% untouched.
+  // When --migrate-capsule is explicitly passed, back up both preload block & payload so
+  // --uninstall-overlay can restore them cleanly.
+  const capsulePayloadPath = options.capsulePayloadPath
+    ? resolve(String(options.capsulePayloadPath))
+    : join(homedir(), '.gemini', 'tools', 'context-capsule-payload.js');
   let capsuleStubbed = false;
-  if (existsSync(capsulePayloadPath)) {
-    const existingPayload = readFileSync(capsulePayloadPath, 'utf8');
-    const capsuleBakPath = join(primaryBackupsDir, 'context-capsule-payload.js.bak');
-    if (existingPayload.trim() !== CAPSULE_SILENT_STUB.trim() && !existsSync(capsuleBakPath)) {
-      copyFileSync(capsulePayloadPath, capsuleBakPath);
+  if (migrateCapsule) {
+    mkdirSync(primaryBackupsDir, { recursive: true });
+    const capsulePreloadBakPath = join(primaryBackupsDir, 'context-capsule-preload-block.js.bak');
+    const capsuleMatches = currentInspect.preloadSource
+      ? currentInspect.preloadSource.match(CAPSULE_BLOCK_RE)
+      : null;
+    let hadPreloadBlock = false;
+    if (capsuleMatches && capsuleMatches.length > 0) {
+      const joinedBlock = capsuleMatches.map((s) => s.trim()).filter(Boolean).join('\n\n');
+      if (joinedBlock) {
+        writeFileSync(capsulePreloadBakPath, `${joinedBlock}\n`, 'utf8');
+        hadPreloadBlock = true;
+      }
     }
-    if (existingPayload !== CAPSULE_SILENT_STUB) {
-      writeFileSync(capsulePayloadPath, CAPSULE_SILENT_STUB, 'utf8');
+
+    let hadPayloadFile = false;
+    if (existsSync(capsulePayloadPath)) {
+      const existingPayload = readFileSync(capsulePayloadPath, 'utf8');
+      const capsuleBakPath = join(primaryBackupsDir, 'context-capsule-payload.js.bak');
+      if (existingPayload.trim() !== CAPSULE_SILENT_STUB.trim() && !existsSync(capsuleBakPath)) {
+        copyFileSync(capsulePayloadPath, capsuleBakPath);
+      }
+      if (existingPayload !== CAPSULE_SILENT_STUB) {
+        writeFileSync(capsulePayloadPath, CAPSULE_SILENT_STUB, 'utf8');
+      }
+      hadPayloadFile = true;
+      capsuleStubbed = true;
     }
-    capsuleStubbed = true;
+
+    if (hadPreloadBlock || hadPayloadFile) {
+      writeFileSync(
+        join(primaryBackupsDir, 'capsule-migration.json'),
+        JSON.stringify(
+          {
+            migratedAt: new Date().toISOString(),
+            hadPreloadBlock,
+            hadPayloadFile,
+            capsulePayloadPath,
+          },
+          null,
+          2,
+        ),
+        'utf8',
+      );
+    }
   }
 
   // Sidecar coexistence control:
-  // - Default: stop & remove native right-pane sidecar to avoid duplicate background polling
+  // - Default: stop & remove our own native right-pane sidecar to avoid duplicate background polling
   // - With --keep-sidecar: preserve (or install on real host) native right-pane sidecar alongside top-right HUD
-  const sidecarPluginDir = DEFAULT_SIDECAR_TARGET;
+  const sidecarPluginDir = options.sidecarPluginDir
+    ? resolve(String(options.sidecarPluginDir))
+    : DEFAULT_SIDECAR_TARGET;
   let removedSidecarPlugin = false;
   let keptSidecarPlugin = false;
   if (options.keepSidecar) {
@@ -1439,13 +1503,16 @@ export async function installMeterOverlay(options = {}) {
       installSidecarPlugin({ target: sidecarPluginDir });
       keptSidecarPlugin = true;
     }
-  } else if (existsSync(sidecarPluginDir)) {
+  } else if (!options.asarPath && existsSync(sidecarPluginDir)) {
     const rmRes = await uninstallSidecarPlugin({ target: sidecarPluginDir });
     removedSidecarPlugin = Boolean(rmRes.removed);
   }
 
-  // Surgical ASAR preload.js patch (strip capsule, inject AGY_QUOTA_OVERLAY, vm.Script check)
-  const nextPreload = transformPreloadSource(currentInspect.preloadSource, { mode: 'install' });
+  // Surgical ASAR preload.js patch (inject AGY_QUOTA_OVERLAY, vm.Script check; preserve other tools by default)
+  const nextPreload = transformPreloadSource(currentInspect.preloadSource, {
+    mode: 'install',
+    migrateCapsule,
+  });
   let asarResult;
   if (nextPreload !== currentInspect.preloadSource) {
     asarResult = rewriteAsarPreloadSurgical(asarPath, nextPreload);
@@ -1470,11 +1537,14 @@ export async function installMeterOverlay(options = {}) {
   }
 
   // CDP Zero-Restart instant hot-mount (auto-adapts to Companion or Standalone Top-Right HUD)
-  const cdpResult = await hotMountViaCdp({
-    uiScriptPath: join(overlayDir, 'meter-overlay-ui.js'),
-    quotaCorePath: join(overlayDir, 'quota-core.cjs'),
-    mode: 'install',
-  });
+  const cdpResult = options.skipCdp
+    ? { attempted: false, reason: 'skipCdp requested', targets: 0, mounted: 0, mountModes: [] }
+    : await hotMountViaCdp({
+        uiScriptPath: join(overlayDir, 'meter-overlay-ui.js'),
+        quotaCorePath: join(overlayDir, 'quota-core.cjs'),
+        mode: 'install',
+        migrateCapsule,
+      });
 
   return {
     ok: true,
@@ -1501,13 +1571,53 @@ export const installTopRightOverlay = installMeterOverlay;
 
 export async function uninstallMeterOverlay(options = {}) {
   const asarPath = discoverAsarPath(options.asarPath);
-  const stateDir = resolveContextMeterStateDir();
+  const stateDir = options.stateDir ? resolve(String(options.stateDir)) : resolveContextMeterStateDir();
   const overlayDir = join(stateDir, 'agy-quota-overlay');
-  const sharedDataDir = resolveSharedQuotaDir();
+  const sharedDataDir = options.sharedDataDir
+    ? resolve(String(options.sharedDataDir))
+    : resolveSharedQuotaDir();
+  const primaryBackupsDir = resolveOverlayBackupsDir(sharedDataDir);
   const fallbackOverlayDir = join(sharedDataDir, 'overlay');
 
+  // If --migrate-capsule was explicitly opted into during install, restore both
+  // preload snippet and payload file on uninstall.
+  const migrationMarkerPath = join(primaryBackupsDir, 'capsule-migration.json');
+  const capsulePreloadBakPath = join(primaryBackupsDir, 'context-capsule-preload-block.js.bak');
+  const capsulePayloadBakPath = join(primaryBackupsDir, 'context-capsule-payload.js.bak');
+  let restoreCapsuleBlock = '';
+  let restoredCapsule = false;
+
+  if (existsSync(migrationMarkerPath)) {
+    let migrationMeta = null;
+    try {
+      migrationMeta = JSON.parse(readFileSync(migrationMarkerPath, 'utf8'));
+    } catch {
+      migrationMeta = {};
+    }
+    if (existsSync(capsulePreloadBakPath)) {
+      restoreCapsuleBlock = readFileSync(capsulePreloadBakPath, 'utf8');
+    }
+    const targetCapsulePayload = options.capsulePayloadPath
+      ? resolve(String(options.capsulePayloadPath))
+      : migrationMeta?.capsulePayloadPath || join(homedir(), '.gemini', 'tools', 'context-capsule-payload.js');
+    if (existsSync(capsulePayloadBakPath)) {
+      mkdirSync(dirname(targetCapsulePayload), { recursive: true });
+      copyFileSync(capsulePayloadBakPath, targetCapsulePayload);
+      rmSync(capsulePayloadBakPath, { force: true });
+      restoredCapsule = true;
+    }
+    if (existsSync(capsulePreloadBakPath)) {
+      rmSync(capsulePreloadBakPath, { force: true });
+      restoredCapsule = true;
+    }
+    rmSync(migrationMarkerPath, { force: true });
+  }
+
   const currentInspect = inspectAsarFast(asarPath);
-  const cleanedPreload = transformPreloadSource(currentInspect.preloadSource, { mode: 'uninstall' });
+  const cleanedPreload = transformPreloadSource(currentInspect.preloadSource, {
+    mode: 'uninstall',
+    restoreCapsuleBlock,
+  });
   let asarResult = { writeStrategy: 'unchanged' };
   if (cleanedPreload !== currentInspect.preloadSource) {
     asarResult = rewriteAsarPreloadSurgical(asarPath, cleanedPreload);
@@ -1523,12 +1633,15 @@ export async function uninstallMeterOverlay(options = {}) {
     uninstallAutoHealHook({ sharedDataDir });
   }
 
-  const cdpResult = await hotMountViaCdp({ uiScriptPath: '', mode: 'uninstall' });
+  const cdpResult = options.skipCdp
+    ? { attempted: false, reason: 'skipCdp requested', targets: 0, mounted: 0, mountModes: [] }
+    : await hotMountViaCdp({ uiScriptPath: '', mode: 'uninstall' });
 
   return {
     ok: true,
     asarPath,
     removedOverlayDir: overlayDir,
+    restoredCapsule,
     asarResult,
     cdpResult,
   };
@@ -1537,9 +1650,11 @@ export async function uninstallMeterOverlay(options = {}) {
 export function getOverlayStatus(options = {}) {
   const asarPath = discoverAsarPath(options.asarPath);
   const resourcesDir = dirname(asarPath);
-  const stateDir = resolveContextMeterStateDir();
+  const stateDir = options.stateDir ? resolve(String(options.stateDir)) : resolveContextMeterStateDir();
   const overlayDir = join(stateDir, 'agy-quota-overlay');
-  const sharedDataDir = resolveSharedQuotaDir();
+  const sharedDataDir = options.sharedDataDir
+    ? resolve(String(options.sharedDataDir))
+    : resolveSharedQuotaDir();
   const primaryBackupsDir = resolveOverlayBackupsDir(sharedDataDir);
   const legacyBackupsDir = join(stateDir, 'backups');
 
@@ -1594,7 +1709,6 @@ export function getOverlayStatus(options = {}) {
 
   const healthy =
     asarInspect.hasOverlayMarker &&
-    !asarInspect.hasCapsuleMarker &&
     preloadSyntaxValid &&
     allCompanionPresent;
 
@@ -1625,6 +1739,7 @@ function parseInstallerArgs(argv) {
   let mode = 'install';
   let asarPath = null;
   let keepSidecar = false;
+  let migrateCapsule = false;
   let json = false;
   let quiet = false;
 
@@ -1640,6 +1755,8 @@ function parseInstallerArgs(argv) {
       mode = 'uninstall';
     } else if (arg === '--keep-sidecar') {
       keepSidecar = true;
+    } else if (arg === '--migrate-capsule') {
+      migrateCapsule = true;
     } else if (arg === '--json') {
       json = true;
     } else if (arg === '--quiet' || arg === '-q') {
@@ -1654,11 +1771,13 @@ function parseInstallerArgs(argv) {
 
 Options:
   --top-right, --meter-overlay   Install/update top-right semi-ring quota overlay & hot-mount via CDP
-                                 (Auto-adapts to Context Meter companion mode or standalone top-right HUD)
+                                 (Auto-adapts to Context Meter companion mode or standalone top-right HUD;
+                                  leaves other third-party tools untouched by default)
   --ensure                       Verify ASAR hooks (and companion Context Meter) and self-heal if wiped
   --keep-sidecar                 Preserve/enable the native right auxiliary sidecar alongside top-right HUD
+  --migrate-capsule              Explicitly opt in to backing up & retiring legacy context-capsule (restored on uninstall)
   --overlay-status               Inspect ASAR hook, overlay runtime, backup & sidecar status
-  --uninstall-overlay            Remove ASAR preload hook & overlay runtime cleanly
+  --uninstall-overlay            Remove ASAR preload hook & overlay runtime cleanly (restores migrated capsule if any)
   --asar <path>                  Explicit path to Antigravity resources/app.asar
   --quiet, -q                    Suppress non-error status output (used by auto-ensure hook)
   --json                         Print machine-readable JSON output
@@ -1667,7 +1786,7 @@ Options:
     }
   }
 
-  return { mode, asarPath, keepSidecar, json, quiet };
+  return { mode, asarPath, keepSidecar, migrateCapsule, json, quiet };
 }
 
 function printInstallReport(res) {
