@@ -82,7 +82,7 @@ async function importSidecarSdk() {
   throw lastErr;
 }
 
-const CLI_HELP_TEXT = `AGY Quota v1.3.1 Sidecar & CLI
+const CLI_HELP_TEXT = `AGY Quota v1.3.2 Sidecar & CLI
 
 Usage:
   node main.mjs --cli [options]       Render colored quota dashboard in terminal
@@ -100,14 +100,15 @@ CLI Options:
   --iterations <n>      Exit after <n> watch refreshes (for automated checks)
   --mask                Mask account email (e.g. bi***@gmail.com)
   --no-color            Disable ANSI terminal colors (also honors NO_COLOR)
-  --read-only           Do not write local connection cache, quota history, or refreshed OAuth tokens
+  --read-only           Zero-write query (skip creating dirs, writing cache/history, or refreshing OAuth file)
   --oauth               Force Cloud Code OAuth API fallback (~/.gemini/antigravity-cli)
   --profile-dir <dir>   Target profile home containing .gemini/antigravity-cli
   --check-update        Query remote version (honors HTTPS_PROXY & ContextMeter proxy)
   --update              Pull & atomically sync runtime update (--dry-run, --force, --skill-dir)
   --host <addr>         Bind address for --standalone (default: 127.0.0.1)
   --port <n>            Bind port for --standalone (default: 0 / auto)
-  --admin-token <tok>   Required bearer/header token to enable /api/update/* on non-loopback hosts`;
+  --admin-token <tok>   Required bearer/header token when binding --standalone to non-loopback hosts
+  --allowed-host <list> Comma-separated allowed Host headers when reverse-proxying --standalone`;
 
 async function runDumpMode(argv, runtimeOptions) {
   const snap = await fetchQuotaSnapshot(true, runtimeOptions);
@@ -126,7 +127,17 @@ async function runDumpMode(argv, runtimeOptions) {
   console.log(JSON.stringify(snap, null, 2));
 }
 
+function isLoopbackBindHost(hostStr) {
+  const h = String(hostStr || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+  return h === '' || h === '127.0.0.1' || h === 'localhost' || h === '::1' || h === '::ffff:127.0.0.1';
+}
+
 async function runStandaloneServer(port = 0, host = '127.0.0.1', runtimeOptions = {}) {
+  if (!isLoopbackBindHost(host) && !String(runtimeOptions.adminToken || '').trim()) {
+    throw new Error(
+      `Refusing to bind standalone server to non-loopback host "${host}" without --admin-token <secret> (or AGY_QUOTA_ADMIN_TOKEN).`,
+    );
+  }
   const handler = createStandaloneHandler(__dirname, {
     ...runtimeOptions,
     listenHost: host,
@@ -231,6 +242,7 @@ if (isDirectEntry) {
     readOnly: args.includes('--read-only') || args.includes('--no-save-history'),
     profileDir: getFlagValue(args, '--profile-dir'),
     adminToken: getFlagValue(args, '--admin-token') || process.env.AGY_QUOTA_ADMIN_TOKEN || '',
+    allowedHosts: getFlagValue(args, '--allowed-host') || process.env.AGY_QUOTA_ALLOWED_HOSTS || '',
   };
 
   if (args.includes('--help') || args.includes('-h')) {

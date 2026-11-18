@@ -27,8 +27,8 @@ node "<skill_dir>/scripts/agy-quota.mjs" <args>
 > **Privacy & Local State Notes**:
 > - **Mask emails by default**: Always pass `--mask` when printing or inspecting quota output unless the user explicitly asks to see their full unmasked email address.
 > - **Local cache, history & OAuth refresh behavior**: By default, quota queries update local connection cache (`~/.gemini/antigravity/agy-quota/last_ls_conn.json`, `0600`) and 90-minute rolling usage history (`quota_history.json`) to compute accurate burn rates (`pp/h`). When falling back to Cloud Code OAuth (`--oauth` or no local Language Server) and the local access token is expired, it refreshes the token via Google OAuth2 and writes the refreshed token back to `antigravity-oauth-token`.
-> - **Strict zero-write mode**: Pass `--read-only` (e.g. `node "<skill_dir>/scripts/agy-quota.mjs" --json --mask --read-only`) if the user requests a strictly stateless check with zero local file writes.
-> - **First-run subfolder bootstrap**: If installed via `npx skills add awu5425/agy-quota` without `./runtime/`, the first invocation downloads the commit-pinned runtime from `awu5425/agy-quota` on GitHub and verifies JS syntax before execution.
+> - **Strict zero-write mode**: Pass `--read-only` (e.g. `node "<skill_dir>/scripts/agy-quota.mjs" --json --mask --read-only`) if the user requests a strictly stateless check with zero local directory creation, zero cache/history writes, and zero OAuth token writeback (requires `./runtime/` already present locally; refuses online bootstrap while `--read-only` is active).
+> - **First-run subfolder bootstrap**: If installed via `npx skills add awu5425/agy-quota` without `./runtime/`, the first non-read-only invocation resolves an immutable 40-char Git commit SHA from `awu5425/agy-quota` on GitHub (failing closed if commit SHA resolution is unavailable) and verifies JS syntax before execution.
 
 ## Workflows
 
@@ -85,4 +85,4 @@ For local browser preview or headless Linux / SSH port-forwarding:
 node "<skill_dir>/scripts/agy-quota.mjs" --standalone --host 127.0.0.1 --port 4318
 ```
 
-Pass `--host 0.0.0.0` only when the user explicitly wants LAN/remote access (self-update endpoints are automatically disabled on non-loopback interfaces unless `--admin-token <secret>` is configured). Verify `http://127.0.0.1:<port>/api/quota` returns HTTP `200`.
+Pass `--host 0.0.0.0 --admin-token <secret>` only when the user explicitly wants LAN/remote access (binding to non-loopback interfaces requires `--admin-token`, enforces trusted `Host`/`Origin` headers against DNS rebinding, and protects `/api/quota` and `/api/update/*` with token authentication).

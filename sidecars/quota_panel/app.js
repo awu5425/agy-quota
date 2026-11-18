@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const APP_VERSION = '1.3.1';
+  const APP_VERSION = '1.3.2';
   const DEFAULT_GITHUB_REPO = 'awu5425/agy-quota';
   const POLL_MS = 60_000;
   const COUNTDOWN_TICK_MS = 30_000;
@@ -228,17 +228,60 @@
 
   const t = (key) => I18N[state.lang]?.[key] ?? I18N.zh[key] ?? key;
 
+  let cachedHashAuthToken = '';
+  try {
+    if (typeof window !== 'undefined' && window.location && window.location.hash) {
+      const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+      const hashTok = hashParams.get('token');
+      if (hashTok && hashTok.trim()) {
+        cachedHashAuthToken = hashTok.trim();
+        hashParams.delete('token');
+        const rem = hashParams.toString();
+        if (window.history && typeof window.history.replaceState === 'function') {
+          window.history.replaceState(
+            null,
+            '',
+            `${window.location.pathname}${window.location.search}${rem ? `#${rem}` : ''}`,
+          );
+        }
+      }
+    }
+  } catch {
+    // ignore hash parse errors
+  }
+
+  function resolveClientAuthToken() {
+    if (cachedHashAuthToken) return cachedHashAuthToken;
+    const winTok = globalThis.__AGY_QUOTA_CSRF_TOKEN__;
+    if (typeof winTok === 'string' && winTok.trim()) return winTok.trim();
+    try {
+      const meta = document.querySelector?.('meta[name="agy-quota-csrf"]');
+      const metaTok = meta?.getAttribute?.('content') || '';
+      if (metaTok.trim()) {
+        globalThis.__AGY_QUOTA_CSRF_TOKEN__ = metaTok.trim();
+        return metaTok.trim();
+      }
+    } catch {
+      // ignore DOM error
+    }
+    return '';
+  }
+
   function getApiFetch() {
     return window.sidecar?.fetch ? window.sidecar.fetch.bind(window.sidecar) : fetch;
   }
 
-  function buildJsonHeaders() {
-    const headers = { 'Content-Type': 'application/json' };
-    const token = globalThis.__AGY_QUOTA_CSRF_TOKEN__;
-    if (typeof token === 'string' && token.trim()) {
-      headers['X-AGY-Quota-Token'] = token.trim();
+  function buildAuthHeaders(extra = {}) {
+    const headers = { ...extra };
+    const token = resolveClientAuthToken();
+    if (token) {
+      headers['X-AGY-Quota-Token'] = token;
     }
     return headers;
+  }
+
+  function buildJsonHeaders() {
+    return buildAuthHeaders({ 'Content-Type': 'application/json' });
   }
 
   // -------------------------------------------------------------------------
@@ -1625,7 +1668,7 @@
   async function loadUpdateStatus() {
     try {
       const f = getApiFetch();
-      const res = await f('/api/update/status', { method: 'GET' });
+      const res = await f('/api/update/status', { method: 'GET', headers: buildAuthHeaders() });
       if (res.ok) {
         const json = await res.json();
         applyUpdateCheckPayload(json);
@@ -1774,7 +1817,7 @@
     try {
       const f = getApiFetch();
       const url = force ? '/api/quota?force=1' : '/api/quota';
-      const res = await f(url, { method: 'GET' });
+      const res = await f(url, { method: 'GET', headers: buildAuthHeaders() });
       const json = await res.json();
       if (!res.ok || json?.ok === false) {
         throw new Error(json?.error || `HTTP ${res.status}`);

@@ -1,10 +1,10 @@
-# AGY Quota (`agy-quota` v1.3.1)
+# AGY Quota (`agy-quota` v1.3.2)
 
 [English](./README.md) | 简体中文
 
 一个 **100% 原创、零运行时第三方依赖** 的 **Antigravity 2.x** 账号配额监控套件与 **Agent Skill（`/agy-quota`）**。底层共用单一核心引擎（`src/quota-core.cjs`）与统一缓存/配置目录（`~/.gemini/antigravity/agy-quota`）。
 
-`agy-quota` v1.3.1 在桌面端提供 **两种自由可选（亦可共存）的 UI 形态**、**原生 `/agy-quota` 对话技能（Skill）**，并完整覆盖终端 CLI 与远程网页场景：
+`agy-quota` v1.3.2 在桌面端提供 **两种自由可选（亦可共存）的 UI 形态**、**原生 `/agy-quota` 对话技能（Skill）**，并完整覆盖终端 CLI 与远程网页场景：
 
 1. **右上角半环看板（`--top-right` / `--meter-overlay`，桌面端首选）** —— 支持 CDP 免重启即时热挂载，**双模自适应切换**：
    - **独立右上角模式（零前置依赖）**：在**未安装** `antigravity-context-viewer` 的干净客户端上开箱即用，自动在窗口右上角（智能避让最小化/最大化/关闭三键）挂载精致的 SVG 进度环胶囊按钮（`#agy-quota-standalone-hud`），点击弹出 `476px` 四层 `1×2 / 1×3` 自适应半环看板。
@@ -31,9 +31,9 @@
 
 ---
 
-## v1.3.1 全新升级与核心特性
+## v1.3.2 全新升级与核心特性
 
-- **安全加固与工程健壮性全面升级（`v1.3.1`）**：
+- **安全加固与工程健壮性全面升级（`v1.3.2`）**：
   - **可信源强锁与 Web 更新接口鉴权**：在线自更新强绑定官方 `awu5425/agy-quota` 仓库并优先锁定 40 位不可变 Commit SHA 与跨文件版本一致性校验；Standalone 网页服务对 `/api/update/*` 强制校验回环地址 + 同源 CSRF 令牌，绑定 `0.0.0.0` 时默认禁用远端更新写入（除非显式配置 `--admin-token`）。
   - **非侵入式 HUD 安装默认策略**：`--top-right` 默认 100% 保持其他第三方或旧版工具（如 `context-capsule`）原样不动；仅在显式传入 `--migrate-capsule` 时备份迁移，并在 `--uninstall-overlay` 时自动完整恢复。
   - **全量统一打包清单与跨盘原子安装**：统一 `--skill`、`--sidecar` 与 `npx skills add` 24 项文件清单，写入前做完整性预检与同盘 staging 原子替换（内置 `EXDEV` 跨盘兜底），修复短采样窗口消耗速率低估、重置时间到期强显 `100%` 及自定义 Skill 目录热更新问题，并新增 `--read-only` 纯只读模式与 `npm test` 回归测试套件。
@@ -48,7 +48,7 @@
 - **主题跟随系统/宿主 + 三态切换（`Auto / Dark / Light`）**：
   - 默认 `Auto`（自动跟随）：实时监听 Antigravity 宿主页面类名、`data-theme`、背景明度以及系统 `prefers-color-scheme: dark` 事件，明暗切换毫秒级同步 `--qp-*` 亮暗色板；同时支持在顶栏手动锁定 `Dark` 或 `Light`（`localStorage['agy_quota_theme']`）。
 - **GitHub 在线检查与免重启热升级（`--check-update` / `--update` 及面板自动更新开关）**：
-  - 看板底部新增单行版本栏 `.qp-footer-bar`：展示 `AGY Quota v1.3.1`、一键检查/立即更新按钮与 **`自动更新`（`Auto-update`）** 开关（配置持久化于 `~/.gemini/antigravity/agy-quota/settings.json`）。
+  - 看板底部新增单行版本栏 `.qp-footer-bar`：展示 `AGY Quota v1.3.2`、一键检查/立即更新按钮与 **`自动更新`（`Auto-update`）** 开关（配置持久化于 `~/.gemini/antigravity/agy-quota/settings.json`）。
   - 支持环境变量及本机代理自动识别，双通道查询 GitHub `releases/latest` 与 `main/package.json`；下载至临时 staging 目录全量通过 JS 语法守卫后原子替换已激活的右上角/右侧栏/Skill 运行时，并支持前端 UI 免重启即时热替换。
 - **476px 四层精简自适应半环看板（`1×2 Ultra` / `1×3 Pro`）**：
   1. **紧凑顶栏 & 单行账号条**：`半弧 | 圆环`（`Arc | Ring`）切换、`中 / EN`、`Auto / Dark / Light` 主题键、刷新倒计时、邮箱点击高斯模糊打码，以及精准解析的 `Google AI Pro` / `Google AI Ultra` 徽章。
@@ -64,7 +64,7 @@
 
 ```text
 agy-quota/
-├── package.json                     # v1.3.1 包配置（Apache-2.0，零运行时第三方依赖）
+├── package.json                     # v1.3.2 包配置（Apache-2.0，零运行时第三方依赖）
 ├── cli.mjs                          # 统一 CLI 入口（--top-right、--sidecar、--skill、--watch、--update、--standalone）
 ├── install.mjs                      # 零补丁原生右侧栏 Sidecar 与自包含 Agent Skill 安装/卸载器
 ├── plugin.json                      # Antigravity 2.x 原生插件清单（同时包含 Sidecar 与 /agy-quota Skill）
@@ -196,7 +196,7 @@ node cli.mjs --oauth --profile-dir ~/.gemini-profiles/1
 
 # 启动独立网页预览服务（支持本地查看或远程服务器 SSH 端口转发）
 node cli.mjs --standalone --port 4318
-node cli.mjs --standalone --host 0.0.0.0 --port 14318
+node cli.mjs --standalone --host 0.0.0.0 --port 14318 --admin-token <your-secret>
 ```
 
 ---

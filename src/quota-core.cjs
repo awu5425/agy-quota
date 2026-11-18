@@ -363,10 +363,17 @@ function writeSecureJson(filePath, data, pretty = false) {
   }
 }
 
-function resolveSharedDataDir() {
-  const targetDir = process.env.AGY_QUOTA_SHARED_DIR
+function getSharedDataDirPath() {
+  return process.env.AGY_QUOTA_SHARED_DIR
     ? resolve(process.env.AGY_QUOTA_SHARED_DIR)
     : join(homedir(), '.gemini', 'antigravity', 'agy-quota');
+}
+
+function resolveSharedDataDir(opts = {}) {
+  const targetDir = getSharedDataDirPath();
+  if (opts && (opts.readOnly || opts.noInit)) {
+    return targetDir;
+  }
 
   if (initializedSharedDir === targetDir) {
     return targetDir;
@@ -452,12 +459,14 @@ function resolveSharedDataDir() {
   return targetDir;
 }
 
-function getHistoryPath() {
-  return join(resolveSharedDataDir(), 'quota_history.json');
+function getHistoryPath(ensureInit = false) {
+  const baseDir = ensureInit ? resolveSharedDataDir() : getSharedDataDirPath();
+  return join(baseDir, 'quota_history.json');
 }
 
-function getLsConnCachePath() {
-  return join(resolveSharedDataDir(), 'last_ls_conn.json');
+function getLsConnCachePath(ensureInit = false) {
+  const baseDir = ensureInit ? resolveSharedDataDir() : getSharedDataDirPath();
+  return join(baseDir, 'last_ls_conn.json');
 }
 
 // ---------------------------------------------------------------------------
@@ -468,7 +477,7 @@ const protocolCache = new Map();
 let cachedConn = null;
 
 function loadLastLsConn() {
-  const raw = readJsonSafe(getLsConnCachePath());
+  const raw = readJsonSafe(getLsConnCachePath(false));
   if (!raw?.host || !raw?.port || !raw?.csrfToken) return null;
   const port = Number(raw.port);
   if (!Number.isFinite(port) || port <= 0) return null;
@@ -484,7 +493,7 @@ function saveLastLsConn(conn) {
   if (!conn?.host || !conn?.port || !conn?.csrfToken) return;
   const key = `${conn.host}:${conn.port}`;
   writeSecureJson(
-    getLsConnCachePath(),
+    getLsConnCachePath(true),
     {
       protocol: conn.protocol || protocolCache.get(key) || null,
       host: String(conn.host),
@@ -903,7 +912,7 @@ function syncHistoryFromDisk(now) {
 }
 
 function saveHistory(points) {
-  const histPath = getHistoryPath();
+  const histPath = getHistoryPath(true);
   try {
     mkdirSync(dirname(histPath), { recursive: true });
     writeFileSync(histPath, JSON.stringify(points), 'utf8');
@@ -3310,14 +3319,14 @@ async function runCliReport(argv = []) {
 }
 
 // ---------------------------------------------------------------------------
-// Self-Update & Online Hot-Upgrade Engine (v1.3.1 — Source-Pinned & Commit-Locked)
+// Self-Update & Online Hot-Upgrade Engine (v1.3.2 — Source-Pinned & Commit-Locked)
 // ---------------------------------------------------------------------------
 
-const QUOTA_CORE_VERSION = '1.3.1';
+const QUOTA_CORE_VERSION = '1.3.2';
 const DEFAULT_UPDATE_REPO = 'awu5425/agy-quota';
 const TRUSTED_GITHUB_API_BASE = 'https://api.github.com';
 const TRUSTED_GITHUB_RAW_BASE = 'https://raw.githubusercontent.com';
-const SAFE_GIT_REF_RE = /^(?:[0-9a-f]{40}|v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?|main)$/;
+const IMMUTABLE_COMMIT_SHA_RE = /^[0-9a-f]{40}$/;
 const TEST_SOURCE_OVERRIDE_SYM = Symbol('agyQuota.testSourceOverride');
 const UPDATE_CHECK_TTL_MS = 6 * 60 * 60 * 1000;
 const UPDATE_HTTP_TIMEOUT_MS = 12_000;
@@ -3474,11 +3483,12 @@ function resolveCurrentVersion(opts = {}) {
   return QUOTA_CORE_VERSION;
 }
 
-function getSettingsPath(opts = {}) {
+function getSettingsPath(opts = {}, ensureInit = false) {
   if (opts && typeof opts.settingsPath === 'string' && opts.settingsPath.trim()) {
     return resolve(opts.settingsPath);
   }
-  return join(resolveSharedDataDir(), 'settings.json');
+  const baseDir = ensureInit ? resolveSharedDataDir() : getSharedDataDirPath();
+  return join(baseDir, 'settings.json');
 }
 
 function normalizeUpdatePrefsObject(raw = {}) {
@@ -3500,7 +3510,7 @@ function getUpdatePrefs(opts = {}) {
 }
 
 function setUpdatePrefs(patch = {}, opts = {}) {
-  const settingsPath = getSettingsPath(opts);
+  const settingsPath = getSettingsPath(opts, true);
   const existing = readJsonSafe(settingsPath);
   const base = existing && typeof existing === 'object' && !Array.isArray(existing) ? { ...existing } : {};
   const current = normalizeUpdatePrefsObject(base);
@@ -4105,24 +4115,34 @@ async function queryRemoteVersionMetadata(spec, opts = {}) {
         const parsed = parseReleaseMetadata(json, spec.repoSlug);
         if (parsed) {
           const lockedSha = await resolveImmutableGitHubCommitSha(spec, parsed.targetRef, opts);
-          if (lockedSha) {
-            parsed.targetRef = lockedSha;
+          if (!IMMUTABLE_COMMIT_SHA_RE.test(lockedSha)) {
+            throw new Error(
+              `Unable to lock release "${parsed.targetRef}" to an immutable 40-char commit SHA (GitHub commit API unavailable or rate-limited); refusing unlocked update.`,
+            );
           }
+          parsed.targetRef = lockedSha;
           return parsed;
         }
       }
     } catch (err) {
+      if (err && /immutable 40-char commit SHA/i.test(String(err.message || ''))) {
+        throw err;
+      }
       if (!firstError) firstError = err;
     }
   }
 
-  // Lock main to an immutable 40-char commit SHA before reading package.json so
-  // subsequent multi-file downloads never mix versions across concurrent pushes.
+  // Fail closed if main cannot be locked to an immutable 40-char commit SHA —
+  // never fall back to mutable branch names where sequential file downloads could mix versions.
   const lockedMainSha = await resolveImmutableGitHubCommitSha(spec, 'main', opts);
-  const fetchRef = lockedMainSha || 'main';
-  const rawUrls = [`${spec.rawBaseUrl}/${spec.repoSlug}/${fetchRef}/package.json`];
+  if (!IMMUTABLE_COMMIT_SHA_RE.test(lockedMainSha)) {
+    throw new Error(
+      'Unable to lock remote repository to an immutable 40-char commit SHA (GitHub API unavailable or rate-limited); refusing unlocked update.',
+    );
+  }
+  const rawUrls = [`${spec.rawBaseUrl}/${spec.repoSlug}/${lockedMainSha}/package.json`];
   if (spec.mode === 'custom-http') {
-    rawUrls.push(`${spec.rawBaseUrl}/${fetchRef}/package.json`, `${spec.rawBaseUrl}/package.json`);
+    rawUrls.push(`${spec.rawBaseUrl}/${lockedMainSha}/package.json`);
   }
 
   for (const rawUrl of rawUrls) {
@@ -4135,7 +4155,7 @@ async function queryRemoteVersionMetadata(spec, opts = {}) {
         const json = JSON.parse(res.body);
         const parsed = parseRawPackageMetadata(json, spec.repoSlug, 'github-raw');
         if (parsed) {
-          parsed.targetRef = fetchRef;
+          parsed.targetRef = lockedMainSha;
           return parsed;
         }
       } else if (!firstError && res.statusCode > 0) {
@@ -4178,14 +4198,15 @@ async function checkSelfUpdate(opts = {}) {
     const hasUpdate = compareSemver(remote.latestVersion, currentVersion) > 0;
 
     if (!options.noPersist) {
-      const latestDisk = readJsonSafe(settingsPath);
+      const persistSettingsPath = getSettingsPath(options, true);
+      const latestDisk = readJsonSafe(persistSettingsPath);
       const base = latestDisk && typeof latestDisk === 'object' && !Array.isArray(latestDisk)
         ? { ...latestDisk }
         : {};
       const mergedPrefs = normalizeUpdatePrefsObject(base);
       mergedPrefs.lastCheckedAt = checkedAt;
       writeSecureJson(
-        settingsPath,
+        persistSettingsPath,
         {
           ...base,
           ...mergedPrefs,
@@ -4410,7 +4431,7 @@ function resolveRuntimeUpdateTargets(opts = {}) {
     overlayDirs.push(resolve(String(opts.overlayDir)));
   } else {
     const cmOverlay = join(resolveContextMeterStateDir(), 'agy-quota-overlay');
-    const sharedOverlay = join(resolveSharedDataDir(), 'agy-quota-overlay');
+    const sharedOverlay = join(getSharedDataDirPath(), 'agy-quota-overlay');
     overlayDirs.push(cmOverlay);
     if (resolve(sharedOverlay).toLowerCase() !== resolve(cmOverlay).toLowerCase()) {
       overlayDirs.push(sharedOverlay);
@@ -4495,27 +4516,29 @@ async function applySelfUpdate(opts = {}) {
         error: checkRes.error || 'Failed checking remote update metadata',
       };
     }
-    resolvedRef = checkRes.targetRef || 'main';
+    resolvedRef = checkRes.targetRef || '';
   }
 
-  if (resolvedRef === 'main' && spec.mode !== 'local-dir') {
-    const lockedSha = await resolveImmutableGitHubCommitSha(spec, 'main', options);
-    if (lockedSha) {
-      resolvedRef = lockedSha;
+  // Fail closed unless local-dir fixture: remote updates MUST use an immutable 40-char commit SHA
+  if (spec.mode !== 'local-dir') {
+    if (resolvedRef && !IMMUTABLE_COMMIT_SHA_RE.test(resolvedRef)) {
+      resolvedRef = await resolveImmutableGitHubCommitSha(spec, resolvedRef, options);
     }
-  }
-
-  if (!hasTestOverride && !SAFE_GIT_REF_RE.test(resolvedRef)) {
-    return {
-      ok: false,
-      dryRun,
-      previousVersion,
-      updatedVersion: null,
-      targetRef: null,
-      updatedTargets: [],
-      overlayUiCode: null,
-      error: `Rejected unsafe update target ref: "${resolvedRef}"`,
-    };
+    if (!IMMUTABLE_COMMIT_SHA_RE.test(resolvedRef)) {
+      return {
+        ok: false,
+        dryRun,
+        previousVersion,
+        updatedVersion: null,
+        targetRef: null,
+        updatedTargets: [],
+        overlayUiCode: null,
+        error:
+          'Refusing self-update without an immutable 40-char commit SHA (GitHub commit lock unavailable or rate-limited).',
+      };
+    }
+  } else if (!resolvedRef) {
+    resolvedRef = 'main';
   }
 
   const stagingDir = join(
@@ -4674,7 +4697,7 @@ async function applySelfUpdate(opts = {}) {
     }
 
     if (!options.noPersist) {
-      const settingsPath = getSettingsPath(options);
+      const settingsPath = getSettingsPath(options, true);
       const existing = readJsonSafe(settingsPath) || {};
       const prefs = normalizeUpdatePrefsObject(existing);
       const now = Date.now();
@@ -4841,11 +4864,17 @@ function readHttpJsonBody(req, maxBytes = 256 * 1024) {
   });
 }
 
-function buildStandalonePreloadScript(csrfToken = '') {
-  const tokenLine = csrfToken
-    ? `  window.__AGY_QUOTA_CSRF_TOKEN__ = ${JSON.stringify(csrfToken)};\n`
-    : '';
-  return `(function () {\n${tokenLine}  if (window.sidecar) return;
+const STANDALONE_PRELOAD_JS = `(function () {
+  try {
+    const meta = typeof document !== 'undefined' && document.querySelector
+      ? document.querySelector('meta[name="agy-quota-csrf"]')
+      : null;
+    const token = meta && meta.getAttribute ? meta.getAttribute('content') : '';
+    if (token) {
+      window.__AGY_QUOTA_CSRF_TOKEN__ = token;
+    }
+  } catch (_) {}
+  if (window.sidecar) return;
   const params = new URLSearchParams(window.location.search);
   window.sidecar = {
     conversationId: params.get('conversationId') || '',
@@ -4855,9 +4884,8 @@ function buildStandalonePreloadScript(csrfToken = '') {
     ui: { toggleAuxPane() {}, toggleConversation() {} }
   };
 })();`;
-}
 
-const STANDALONE_PRELOAD_JS = buildStandalonePreloadScript('');
+const LOOPBACK_TRUSTED_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
 
 function isLoopbackHostName(hostInput) {
   const cleaned = String(hostInput || '')
@@ -4881,6 +4909,33 @@ function isLoopbackSocket(req) {
     addr === '::1' ||
     addr === '::ffff:127.0.0.1'
   );
+}
+
+function parseHostHeaderHostname(rawHostHeader) {
+  if (typeof rawHostHeader !== 'string') return '';
+  const trimmed = rawHostHeader.trim();
+  if (!trimmed || /[\s/\\@?#]/.test(trimmed)) return '';
+
+  if (trimmed.startsWith('[')) {
+    const closeIdx = trimmed.indexOf(']');
+    if (closeIdx <= 1) return '';
+    const ipv6 = trimmed.slice(1, closeIdx).toLowerCase();
+    const rest = trimmed.slice(closeIdx + 1);
+    if (rest && !/^:\d{1,5}$/.test(rest)) return '';
+    return ipv6;
+  }
+
+  const firstColon = trimmed.indexOf(':');
+  const lastColon = trimmed.lastIndexOf(':');
+  if (firstColon >= 0 && firstColon !== lastColon) {
+    return '';
+  }
+  if (firstColon >= 0) {
+    const portPart = trimmed.slice(firstColon + 1);
+    if (!/^\d{1,5}$/.test(portPart)) return '';
+    return trimmed.slice(0, firstColon).toLowerCase();
+  }
+  return trimmed.toLowerCase();
 }
 
 function safeTokenEquals(provided, expected) {
@@ -4907,29 +4962,20 @@ function extractRequestAuthToken(req) {
   return '';
 }
 
-function verifySameOriginHeaders(req) {
-  const secFetchSite = String(req?.headers?.['sec-fetch-site'] || '').trim().toLowerCase();
-  if (secFetchSite && secFetchSite !== 'same-origin' && secFetchSite !== 'none') {
-    return { ok: false, reason: 'Cross-site request blocked (Sec-Fetch-Site)' };
+function injectCsrfMetaIntoHtml(html, csrfToken) {
+  if (!csrfToken) return html;
+  const metaTag = `  <meta name="agy-quota-csrf" content="${csrfToken}">\n`;
+  const headIdx = html.indexOf('<head>');
+  if (headIdx >= 0) {
+    return `${html.slice(0, headIdx + 6)}\n${metaTag}${html.slice(headIdx + 6)}`;
   }
-  const originHeader = String(req?.headers?.origin || '').trim();
-  if (originHeader) {
-    try {
-      const originUrl = new URL(originHeader);
-      const reqHost = String(req?.headers?.host || '').trim().toLowerCase();
-      if (!reqHost || originUrl.host.toLowerCase() !== reqHost) {
-        return { ok: false, reason: 'Cross-origin request blocked (Origin mismatch)' };
-      }
-    } catch {
-      return { ok: false, reason: 'Invalid Origin header' };
-    }
-  }
-  return { ok: true, reason: '' };
+  return `${metaTag}${html}`;
 }
 
 function createStandaloneHandler(assetsDir, runtimeOpts = {}) {
   const readAsset = (filename) => readFileSync(join(assetsDir, filename), 'utf8');
   const listenHost = String(runtimeOpts.listenHost || '127.0.0.1').trim();
+  const cleanListenHost = listenHost.toLowerCase().replace(/^\[|\]$/g, '');
   const isBoundLoopbackOnly = isLoopbackHostName(listenHost);
   const explicitAdminToken =
     typeof runtimeOpts.adminToken === 'string' && runtimeOpts.adminToken.trim()
@@ -4937,32 +4983,104 @@ function createStandaloneHandler(assetsDir, runtimeOpts = {}) {
       : '';
   const localCsrfToken = randomBytes(32).toString('hex');
 
+  const explicitAllowedHosts = new Set(
+    (Array.isArray(runtimeOpts.allowedHosts)
+      ? runtimeOpts.allowedHosts
+      : String(runtimeOpts.allowedHosts || '').split(','))
+      .map((s) => String(s || '').trim().toLowerCase().replace(/^\[|\]$/g, ''))
+      .filter(Boolean),
+  );
+
+  const isTrustedHostname = (hostname) => {
+    const h = String(hostname || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+    if (!h) return false;
+    if (LOOPBACK_TRUSTED_HOSTS.has(h)) return true;
+    if (isBoundLoopbackOnly) {
+      // Bound to loopback: strictly reject any non-loopback Host (blocks DNS rebinding!)
+      return false;
+    }
+    if (explicitAllowedHosts.has(h)) return true;
+    if (cleanListenHost && cleanListenHost !== '0.0.0.0' && cleanListenHost !== '::' && h === cleanListenHost) {
+      return true;
+    }
+    // On wildcard bind (0.0.0.0 / ::), allow literal interface IPs while still blocking
+    // unallowlisted DNS domain names against DNS rebinding.
+    if ((cleanListenHost === '0.0.0.0' || cleanListenHost === '::') && net.isIP(h) !== 0) {
+      return true;
+    }
+    return false;
+  };
+
+  const verifyTrustedHostAndOrigin = (req) => {
+    const rawHost = req?.headers?.host;
+    const reqHostname = parseHostHeaderHostname(rawHost);
+    if (!reqHostname || !isTrustedHostname(reqHostname)) {
+      return {
+        ok: false,
+        statusCode: 403,
+        error: 'Forbidden: untrusted Host header (DNS rebinding protection).',
+      };
+    }
+
+    const secFetchSite = String(req?.headers?.['sec-fetch-site'] || '').trim().toLowerCase();
+    if (secFetchSite && secFetchSite !== 'same-origin' && secFetchSite !== 'none') {
+      return {
+        ok: false,
+        statusCode: 403,
+        error: 'Forbidden: cross-site request blocked (Sec-Fetch-Site).',
+      };
+    }
+
+    const originHeader = String(req?.headers?.origin || '').trim();
+    if (originHeader) {
+      try {
+        const originUrl = new URL(originHeader);
+        const normalizedReqHost = String(rawHost || '').trim().toLowerCase();
+        if (
+          originUrl.host.toLowerCase() !== normalizedReqHost ||
+          !isTrustedHostname(originUrl.hostname)
+        ) {
+          return {
+            ok: false,
+            statusCode: 403,
+            error: 'Forbidden: cross-origin request blocked (Origin mismatch).',
+          };
+        }
+      } catch {
+        return { ok: false, statusCode: 403, error: 'Forbidden: invalid Origin header.' };
+      }
+    }
+
+    return { ok: true, reqHostname };
+  };
+
   const sendJson = (res, statusCode, payload) => {
     res.writeHead(statusCode, {
       'Content-Type': 'application/json; charset=utf-8',
       'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
     });
     res.end(JSON.stringify(payload));
   };
 
-  const authorizeUpdateRequest = (req) => {
-    const originCheck = verifySameOriginHeaders(req);
-    if (!originCheck.ok) {
-      return { ok: false, statusCode: 403, error: originCheck.reason };
+  const authorizeApiRequest = (req) => {
+    const hostCheck = verifyTrustedHostAndOrigin(req);
+    if (!hostCheck.ok) {
+      return hostCheck;
     }
 
     const providedToken = extractRequestAuthToken(req);
     const socketIsLoopback = isLoopbackSocket(req);
 
-    // Non-loopback bind (e.g. --host 0.0.0.0) or remote socket: disabled by default
-    // unless operator explicitly configured --admin-token AND caller authenticates.
+    // Non-loopback bind (e.g. --host 0.0.0.0) or remote socket: require explicit --admin-token
+    // for BOTH quota reads and update endpoints.
     if (!isBoundLoopbackOnly || !socketIsLoopback) {
       if (!explicitAdminToken) {
         return {
           ok: false,
           statusCode: 403,
           error:
-            'Self-update endpoints are disabled when bound to non-loopback interfaces (pass --admin-token to authorize).',
+            'API endpoints are disabled on non-loopback interfaces unless --admin-token is configured.',
         };
       }
       if (!safeTokenEquals(providedToken, explicitAdminToken)) {
@@ -4975,7 +5093,7 @@ function createStandaloneHandler(assetsDir, runtimeOpts = {}) {
       return { ok: true };
     }
 
-    // Loopback server + loopback socket: require matching CSRF token (or explicit adminToken)
+    // Loopback server + loopback socket + trusted loopback Host: require localCsrfToken or explicitAdminToken
     if (
       safeTokenEquals(providedToken, localCsrfToken) ||
       (explicitAdminToken && safeTokenEquals(providedToken, explicitAdminToken))
@@ -4984,17 +5102,33 @@ function createStandaloneHandler(assetsDir, runtimeOpts = {}) {
     }
     return {
       ok: false,
-      statusCode: 403,
-      error: 'Forbidden: missing or invalid X-AGY-Quota-Token header.',
+      statusCode: 401,
+      error: 'Unauthorized: missing or invalid X-AGY-Quota-Token header.',
     };
   };
 
   return async (req, res) => {
+    const hostCheck = verifyTrustedHostAndOrigin(req);
+    if (!hostCheck.ok) {
+      sendJson(res, hostCheck.statusCode, { ok: false, error: hostCheck.error });
+      return;
+    }
+
     const hostHeader = req.headers?.host || '127.0.0.1';
     const url = new URL(req.url || '/', `http://${hostHeader}`);
     if (req.method === 'GET' && url.pathname === '/') {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(readAsset('index.html'));
+      const canIssueLocalToken = isBoundLoopbackOnly && isLoopbackSocket(req);
+      const html = injectCsrfMetaIntoHtml(
+        readAsset('index.html'),
+        canIssueLocalToken ? localCsrfToken : '',
+      );
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'X-Frame-Options': 'DENY',
+        'Content-Security-Policy': "frame-ancestors 'none'",
+      });
+      res.end(html);
       return;
     }
     if (req.method === 'GET' && url.pathname === '/styles.css') {
@@ -5008,15 +5142,19 @@ function createStandaloneHandler(assetsDir, runtimeOpts = {}) {
       return;
     }
     if (req.method === 'GET' && url.pathname === '/preload.js') {
-      const canIssueLocalToken = isBoundLoopbackOnly && isLoopbackSocket(req);
       res.writeHead(200, {
         'Content-Type': 'application/javascript; charset=utf-8',
         'Cache-Control': 'no-store',
       });
-      res.end(buildStandalonePreloadScript(canIssueLocalToken ? localCsrfToken : ''));
+      res.end(STANDALONE_PRELOAD_JS);
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/quota') {
+      const auth = authorizeApiRequest(req);
+      if (!auth.ok) {
+        sendJson(res, auth.statusCode, { ok: false, error: auth.error });
+        return;
+      }
       const force = url.searchParams.get('force') === '1';
       const bundle = await fetchQuotaBundle({ ...runtimeOpts, force });
       if (bundle.ok && bundle.snapshot) {
@@ -5027,11 +5165,16 @@ function createStandaloneHandler(assetsDir, runtimeOpts = {}) {
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/update/status') {
+      const auth = authorizeApiRequest(req);
+      if (!auth.ok) {
+        sendJson(res, auth.statusCode, { ok: false, error: auth.error });
+        return;
+      }
       sendJson(res, 200, getUpdateStatus());
       return;
     }
     if ((req.method === 'POST' || req.method === 'GET') && url.pathname === '/api/update/check') {
-      const auth = authorizeUpdateRequest(req);
+      const auth = authorizeApiRequest(req);
       if (!auth.ok) {
         sendJson(res, auth.statusCode, { ok: false, error: auth.error });
         return;
@@ -5056,7 +5199,7 @@ function createStandaloneHandler(assetsDir, runtimeOpts = {}) {
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/update/prefs') {
-      const auth = authorizeUpdateRequest(req);
+      const auth = authorizeApiRequest(req);
       if (!auth.ok) {
         sendJson(res, auth.statusCode, { ok: false, error: auth.error });
         return;
@@ -5078,7 +5221,7 @@ function createStandaloneHandler(assetsDir, runtimeOpts = {}) {
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/update/apply') {
-      const auth = authorizeUpdateRequest(req);
+      const auth = authorizeApiRequest(req);
       if (!auth.ok) {
         sendJson(res, auth.statusCode, { ok: false, error: auth.error });
         return;
@@ -5114,6 +5257,7 @@ module.exports = {
   KNOWN_MODEL_MAP,
   TREND_MODEL_PALETTE,
   BUNDLE_CACHE_TTL_MS,
+  getSharedDataDirPath,
   resolveSharedDataDir,
   resolveContextMeterStateDir,
   resolveCurrentVersion,

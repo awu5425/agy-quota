@@ -57,9 +57,9 @@ export const SKILL_RUNTIME_ENTRIES = CANONICAL_BUNDLE_FILES;
 function readRepoVersion(sourceRoot = REPO_ROOT) {
   try {
     const pkg = JSON.parse(readFileSync(join(sourceRoot, 'package.json'), 'utf8'));
-    return pkg.version || '1.3.1';
+    return pkg.version || '1.3.2';
   } catch {
-    return '1.3.1';
+    return '1.3.2';
   }
 }
 
@@ -84,14 +84,24 @@ export function verifyManifestComplete(sourceRoot = REPO_ROOT, entries = CANONIC
   }
 }
 
-export function moveDirectorySafe(srcDir, dstDir) {
+export function moveDirectorySafe(
+  srcDir,
+  dstDir,
+  { renameImpl = renameSync, cpImpl = cpSync } = {},
+) {
   mkdirSync(dirname(dstDir), { recursive: true });
   try {
-    renameSync(srcDir, dstDir);
+    renameImpl(srcDir, dstDir);
   } catch (err) {
     const code = err && err.code;
     if (code === 'EXDEV' || code === 'EPERM' || code === 'EBUSY' || code === 'EACCES') {
-      cpSync(srcDir, dstDir, { recursive: true, force: true });
+      try {
+        cpImpl(srcDir, dstDir, { recursive: true, force: true });
+      } catch (copyErr) {
+        // Immediately clean up any half-copied destination so partial state never lingers
+        rmSync(dstDir, { recursive: true, force: true });
+        throw copyErr;
+      }
       rmSync(srcDir, { recursive: true, force: true });
     } else {
       throw err;
@@ -99,7 +109,11 @@ export function moveDirectorySafe(srcDir, dstDir) {
   }
 }
 
-function atomicCommitStagedDirectory(stageDir, resolvedTarget) {
+export function atomicCommitStagedDirectory(
+  stageDir,
+  resolvedTarget,
+  { renameImpl = renameSync, cpImpl = cpSync, verifyTarget = null } = {},
+) {
   const parentDir = dirname(resolvedTarget);
   mkdirSync(parentDir, { recursive: true });
   const backupDir = `${resolvedTarget}.bak-${process.pid}-${Date.now()}`;
@@ -111,9 +125,16 @@ function atomicCommitStagedDirectory(stageDir, resolvedTarget) {
   }
 
   try {
-    moveDirectorySafe(stageDir, resolvedTarget);
+    moveDirectorySafe(stageDir, resolvedTarget, { renameImpl, cpImpl });
+    if (typeof verifyTarget === 'function') {
+      verifyTarget(resolvedTarget);
+    }
   } catch (err) {
-    if (hadExisting && existsSync(backupDir) && !existsSync(resolvedTarget)) {
+    // Always remove any partial/corrupted target directory before restoring the previous installation
+    if (existsSync(resolvedTarget)) {
+      rmSync(resolvedTarget, { recursive: true, force: true });
+    }
+    if (hadExisting && existsSync(backupDir)) {
       try {
         moveDirectorySafe(backupDir, resolvedTarget);
       } catch {
@@ -211,6 +232,8 @@ export async function stopOrphanedQuotaPanelSidecars() {
 export function installSidecarPlugin({
   target = DEFAULT_SIDECAR_TARGET,
   sourceRoot = REPO_ROOT,
+  renameImpl = renameSync,
+  cpImpl = cpSync,
 } = {}) {
   const resolvedSource = resolve(sourceRoot);
   const resolvedTarget = resolve(target);
@@ -248,7 +271,11 @@ export function installSidecarPlugin({
     );
 
     verifyManifestComplete(stageDir, SIDECAR_COPY_ENTRIES);
-    atomicCommitStagedDirectory(stageDir, resolvedTarget);
+    atomicCommitStagedDirectory(stageDir, resolvedTarget, {
+      renameImpl,
+      cpImpl,
+      verifyTarget: (dir) => verifyManifestComplete(dir, SIDECAR_COPY_ENTRIES),
+    });
 
     return {
       ok: true,
@@ -319,6 +346,8 @@ export function getSidecarPluginStatus({ target = DEFAULT_SIDECAR_TARGET } = {})
 export function installSkillBundle({
   target = DEFAULT_SKILL_TARGET,
   sourceRoot = REPO_ROOT,
+  renameImpl = renameSync,
+  cpImpl = cpSync,
 } = {}) {
   const resolvedSource = resolve(sourceRoot);
   const resolvedTarget = resolve(target);
@@ -362,7 +391,11 @@ export function installSkillBundle({
     writeFileSync(join(stageRuntimeRoot, 'installed-version.json'), versionMeta, 'utf8');
 
     verifyManifestComplete(stageRuntimeRoot, SKILL_RUNTIME_ENTRIES);
-    atomicCommitStagedDirectory(stageDir, resolvedTarget);
+    atomicCommitStagedDirectory(stageDir, resolvedTarget, {
+      renameImpl,
+      cpImpl,
+      verifyTarget: (dir) => verifyManifestComplete(join(dir, 'runtime'), SKILL_RUNTIME_ENTRIES),
+    });
 
     return {
       ok: true,

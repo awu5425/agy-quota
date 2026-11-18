@@ -50,9 +50,9 @@ const COMPANION_FILES = ['quota-core.cjs', 'overlay-preload.cjs', 'meter-overlay
 function readRepoVersion() {
   try {
     const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
-    return pkg.version || '1.3.1';
+    return pkg.version || '1.3.2';
   } catch {
-    return '1.3.1';
+    return '1.3.2';
   }
 }
 
@@ -1580,16 +1580,23 @@ export async function uninstallMeterOverlay(options = {}) {
   const primaryBackupsDir = resolveOverlayBackupsDir(sharedDataDir);
   const fallbackOverlayDir = join(sharedDataDir, 'overlay');
 
-  // If --migrate-capsule was explicitly opted into during install, restore both
-  // preload snippet and payload file on uninstall.
+  // Transactional capsule restore order:
+  // 1) Read migration metadata & backup contents into memory WITHOUT deleting any backup files.
+  // 2) Rewrite & verify app.asar dist/preload.js FIRST.
+  // 3) Restore & verify context-capsule-payload.js SECOND.
+  // 4) Delete backup artifacts ONLY after BOTH restore steps succeed cleanly (so any failed
+  //    attempt can be safely retried).
   const migrationMarkerPath = join(primaryBackupsDir, 'capsule-migration.json');
   const capsulePreloadBakPath = join(primaryBackupsDir, 'context-capsule-preload-block.js.bak');
   const capsulePayloadBakPath = join(primaryBackupsDir, 'context-capsule-payload.js.bak');
+  const hasMigrationMarker = existsSync(migrationMarkerPath);
+  let migrationMeta = null;
   let restoreCapsuleBlock = '';
+  let targetCapsulePayload = '';
+  let expectedPayloadContent = null;
   let restoredCapsule = false;
 
-  if (existsSync(migrationMarkerPath)) {
-    let migrationMeta = null;
+  if (hasMigrationMarker) {
     try {
       migrationMeta = JSON.parse(readFileSync(migrationMarkerPath, 'utf8'));
     } catch {
@@ -1598,20 +1605,12 @@ export async function uninstallMeterOverlay(options = {}) {
     if (existsSync(capsulePreloadBakPath)) {
       restoreCapsuleBlock = readFileSync(capsulePreloadBakPath, 'utf8');
     }
-    const targetCapsulePayload = options.capsulePayloadPath
+    targetCapsulePayload = options.capsulePayloadPath
       ? resolve(String(options.capsulePayloadPath))
       : migrationMeta?.capsulePayloadPath || join(homedir(), '.gemini', 'tools', 'context-capsule-payload.js');
     if (existsSync(capsulePayloadBakPath)) {
-      mkdirSync(dirname(targetCapsulePayload), { recursive: true });
-      copyFileSync(capsulePayloadBakPath, targetCapsulePayload);
-      rmSync(capsulePayloadBakPath, { force: true });
-      restoredCapsule = true;
+      expectedPayloadContent = readFileSync(capsulePayloadBakPath, 'utf8');
     }
-    if (existsSync(capsulePreloadBakPath)) {
-      rmSync(capsulePreloadBakPath, { force: true });
-      restoredCapsule = true;
-    }
-    rmSync(migrationMarkerPath, { force: true });
   }
 
   const currentInspect = inspectAsarFast(asarPath);
@@ -1622,6 +1621,40 @@ export async function uninstallMeterOverlay(options = {}) {
   let asarResult = { writeStrategy: 'unchanged' };
   if (cleanedPreload !== currentInspect.preloadSource) {
     asarResult = rewriteAsarPreloadSurgical(asarPath, cleanedPreload);
+  }
+
+  if (hasMigrationMarker) {
+    if (expectedPayloadContent !== null && targetCapsulePayload) {
+      mkdirSync(dirname(targetCapsulePayload), { recursive: true });
+      const tmpRestorePath = `${targetCapsulePayload}.restore-${process.pid}-${Date.now()}.tmp`;
+      writeFileSync(tmpRestorePath, expectedPayloadContent, 'utf8');
+      try {
+        renameSync(tmpRestorePath, targetCapsulePayload);
+      } catch {
+        try {
+          copyFileSync(tmpRestorePath, targetCapsulePayload);
+        } finally {
+          rmSync(tmpRestorePath, { force: true });
+        }
+      }
+      const verifiedPayload = readFileSync(targetCapsulePayload, 'utf8');
+      if (verifiedPayload !== expectedPayloadContent) {
+        throw new Error('Post-restore verification failed for context-capsule-payload.js');
+      }
+      restoredCapsule = true;
+    }
+    if (restoreCapsuleBlock.trim()) {
+      restoredCapsule = true;
+    }
+
+    // Both ASAR preload and payload file are now verified restored — safe to remove backups
+    if (existsSync(capsulePayloadBakPath)) {
+      rmSync(capsulePayloadBakPath, { force: true });
+    }
+    if (existsSync(capsulePreloadBakPath)) {
+      rmSync(capsulePreloadBakPath, { force: true });
+    }
+    rmSync(migrationMarkerPath, { force: true });
   }
 
   if (existsSync(overlayDir)) {

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 /**
- * Self-contained AGY Quota Skill Runner (v1.3.1).
+ * Self-contained AGY Quota Skill Runner (v1.3.2).
  * Resolves the local agy-quota CLI across repo, plugin, and standalone skill
- * layouts, and auto-bootstraps the verified, commit-pinned runtime into
+ * layouts, and auto-bootstraps the verified, commit-locked runtime into
  * ./runtime/ on first run when installed as a standalone subfolder
  * (e.g. via `npx skills add awu5425/agy-quota`).
  */
@@ -27,8 +27,9 @@ const __filename = fileURLToPath(import.meta.url);
 const SCRIPTS_DIR = resolve(dirname(__filename));
 const SKILL_DIR = resolve(SCRIPTS_DIR, '..');
 
-export const SKILL_BUNDLE_VERSION = '1.3.1';
+export const SKILL_BUNDLE_VERSION = '1.3.2';
 export const TRUSTED_BOOTSTRAP_REPO = 'awu5425/agy-quota';
+const IMMUTABLE_SHA_RE = /^[0-9a-f]{40}$/;
 
 export const BOOTSTRAP_FILES = Object.freeze([
   'package.json',
@@ -112,6 +113,7 @@ function defaultFetchText(url, headers = {}, redirectsLeft = 4) {
 }
 
 async function resolveLockedCommitRef(fetchText, apiBase, repoSlug) {
+  let lastError = null;
   for (const candidateRef of [`v${SKILL_BUNDLE_VERSION}`, 'main']) {
     try {
       const raw = await fetchText(
@@ -120,14 +122,19 @@ async function resolveLockedCommitRef(fetchText, apiBase, repoSlug) {
       );
       const parsed = JSON.parse(raw);
       const sha = typeof parsed?.sha === 'string' ? parsed.sha.trim().toLowerCase() : '';
-      if (/^[0-9a-f]{40}$/.test(sha)) {
+      if (IMMUTABLE_SHA_RE.test(sha)) {
         return sha;
       }
-    } catch {
-      // Continue to next candidate ref or raw fallback if GitHub API is rate-limited
+    } catch (err) {
+      lastError = err;
     }
   }
-  return 'main';
+  // Fail closed: never fall back to mutable branch names (`main`) where sequential
+  // file fetches could mix versions across concurrent commits.
+  const detail = lastError ? ` (${lastError.message || String(lastError)})` : '';
+  throw new Error(
+    `Refusing to bootstrap runtime without an immutable 40-char commit SHA${detail}. Retry later or install offline via "git clone" + "node cli.mjs --skill".`,
+  );
 }
 
 export function verifyBootstrapConsistency(stageDir) {
@@ -152,18 +159,55 @@ export function verifyBootstrapConsistency(stageDir) {
   return expectedVer;
 }
 
-export function moveDirectorySafe(srcDir, dstDir, renameImpl = renameSync) {
+export function moveDirectorySafe(
+  srcDir,
+  dstDir,
+  renameImpl = renameSync,
+  cpImpl = cpSync,
+) {
   mkdirSync(dirname(dstDir), { recursive: true });
   try {
     renameImpl(srcDir, dstDir);
   } catch (err) {
     const code = err && err.code;
     if (code === 'EXDEV' || code === 'EPERM' || code === 'EBUSY' || code === 'EACCES') {
-      cpSync(srcDir, dstDir, { recursive: true, force: true });
+      try {
+        cpImpl(srcDir, dstDir, { recursive: true, force: true });
+      } catch (copyErr) {
+        rmSync(dstDir, { recursive: true, force: true });
+        throw copyErr;
+      }
       rmSync(srcDir, { recursive: true, force: true });
     } else {
       throw err;
     }
+  }
+}
+
+export function atomicReplaceDirectory(
+  stageDir,
+  targetDir,
+  { renameImpl = renameSync, cpImpl = cpSync } = {},
+) {
+  const backupDir = `${targetDir}.bak-${process.pid}-${Date.now()}`;
+  let hadExisting = false;
+  if (existsSync(targetDir)) {
+    hadExisting = true;
+    moveDirectorySafe(targetDir, backupDir);
+  }
+  try {
+    moveDirectorySafe(stageDir, targetDir, renameImpl, cpImpl);
+    if (hadExisting && existsSync(backupDir)) {
+      rmSync(backupDir, { recursive: true, force: true });
+    }
+  } catch (swapErr) {
+    if (existsSync(targetDir)) {
+      rmSync(targetDir, { recursive: true, force: true });
+    }
+    if (hadExisting && existsSync(backupDir)) {
+      moveDirectorySafe(backupDir, targetDir);
+    }
+    throw swapErr;
   }
 }
 
@@ -172,7 +216,15 @@ export async function bootstrapRuntimeIntoSkillDir({
   fetchText = defaultFetchText,
   apiBase = 'https://api.github.com',
   rawBase = 'https://raw.githubusercontent.com',
+  renameImpl = renameSync,
+  cpImpl = cpSync,
 } = {}) {
+  // Resolve immutable 40-char commit SHA BEFORE creating any staging directory or writing files
+  const lockedRef = await resolveLockedCommitRef(fetchText, apiBase, TRUSTED_BOOTSTRAP_REPO);
+  if (!IMMUTABLE_SHA_RE.test(lockedRef)) {
+    throw new Error('Refusing bootstrap without verified 40-char commit SHA');
+  }
+
   const resolvedSkillDir = resolve(skillDir);
   mkdirSync(resolvedSkillDir, { recursive: true });
   const runtimeDir = join(resolvedSkillDir, 'runtime');
@@ -184,13 +236,12 @@ export async function bootstrapRuntimeIntoSkillDir({
   mkdirSync(stageDir, { recursive: true });
 
   try {
-    const lockedRef = await resolveLockedCommitRef(fetchText, apiBase, TRUSTED_BOOTSTRAP_REPO);
     console.error(
       `[agy-quota] Bootstrapping runtime from ${TRUSTED_BOOTSTRAP_REPO}@${lockedRef.slice(0, 12)}...`,
     );
 
     for (const relPath of BOOTSTRAP_FILES) {
-      const url = `${rawBase}/${TRUSTED_BOOTSTRAP_REPO}/${encodeURIComponent(lockedRef)}/${relPath}`;
+      const url = `${rawBase}/${TRUSTED_BOOTSTRAP_REPO}/${lockedRef}/${relPath}`;
       const content = await fetchText(url);
       if (!content || !content.trim()) {
         throw new Error(`Empty response while bootstrapping ${relPath}`);
@@ -224,22 +275,7 @@ export async function bootstrapRuntimeIntoSkillDir({
     );
     writeFileSync(join(stageDir, 'installed-version.json'), versionMeta, 'utf8');
 
-    const backupDir = `${runtimeDir}.bak-${process.pid}`;
-    if (existsSync(runtimeDir)) {
-      moveDirectorySafe(runtimeDir, backupDir);
-    }
-    try {
-      moveDirectorySafe(stageDir, runtimeDir);
-      if (existsSync(backupDir)) {
-        rmSync(backupDir, { recursive: true, force: true });
-      }
-    } catch (swapErr) {
-      if (existsSync(backupDir) && !existsSync(runtimeDir)) {
-        moveDirectorySafe(backupDir, runtimeDir);
-      }
-      throw swapErr;
-    }
-
+    atomicReplaceDirectory(stageDir, runtimeDir, { renameImpl, cpImpl });
     writeFileSync(join(resolvedSkillDir, 'installed-version.json'), versionMeta, 'utf8');
     return join(runtimeDir, 'cli.mjs');
   } catch (err) {
@@ -269,11 +305,17 @@ function runForward(cliPath, args) {
 }
 
 async function main() {
+  const args = process.argv.slice(2);
   let cliPath = resolveLocalCliPath();
   if (!cliPath) {
+    if (args.includes('--read-only') || args.includes('--no-save-history')) {
+      throw new Error(
+        'Cannot run in --read-only mode before ./runtime/ is installed locally (online bootstrap would write to disk). Run once without --read-only or install offline via "node cli.mjs --skill".',
+      );
+    }
     cliPath = await bootstrapRuntimeIntoSkillDir();
   }
-  process.exitCode = await runForward(cliPath, process.argv.slice(2));
+  process.exitCode = await runForward(cliPath, args);
 }
 
 function safeRealpath(p) {
