@@ -112,7 +112,26 @@ function defaultFetchText(url, headers = {}, redirectsLeft = 4) {
   });
 }
 
-async function resolveLockedCommitRef(fetchText, apiBase, repoSlug) {
+function parseGitSmartRefsSha(body, candidateRefs) {
+  if (typeof body !== 'string' || !body) return '';
+  const map = new Map();
+  for (const rawLine of body.split(/\r?\n/)) {
+    const line = /^[0-9a-f]{4}[0-9a-f]{40}\s/i.test(rawLine) ? rawLine.slice(4) : rawLine;
+    const nulIdx = line.indexOf('\0');
+    const clean = (nulIdx >= 0 ? line.slice(0, nulIdx) : line).trim();
+    const m = clean.match(/^([0-9a-f]{40})\s+(\S+)$/i);
+    if (m) {
+      map.set(m[2], m[1].toLowerCase());
+    }
+  }
+  for (const ref of candidateRefs) {
+    const sha = map.get(ref);
+    if (sha && IMMUTABLE_SHA_RE.test(sha)) return sha;
+  }
+  return '';
+}
+
+async function resolveLockedCommitRef(fetchText, apiBase, repoSlug, gitOriginBase = 'https://github.com') {
   let lastError = null;
   for (const candidateRef of [`v${SKILL_BUNDLE_VERSION}`, 'main']) {
     try {
@@ -129,6 +148,26 @@ async function resolveLockedCommitRef(fetchText, apiBase, repoSlug) {
       lastError = err;
     }
   }
+
+  // Fallback to Git Smart HTTP info/refs on github.com (not subject to api.github.com 60/hr limit)
+  try {
+    const refsBody = await fetchText(
+      `${gitOriginBase}/${repoSlug}.git/info/refs?service=git-upload-pack`,
+      { Accept: 'application/x-git-upload-pack-advertisement' },
+    );
+    const smartSha = parseGitSmartRefsSha(refsBody, [
+      `refs/tags/v${SKILL_BUNDLE_VERSION}^{}`,
+      `refs/tags/v${SKILL_BUNDLE_VERSION}`,
+      'refs/heads/main',
+      'HEAD',
+    ]);
+    if (IMMUTABLE_SHA_RE.test(smartSha)) {
+      return smartSha;
+    }
+  } catch (err) {
+    if (!lastError) lastError = err;
+  }
+
   // Fail closed: never fall back to mutable branch names (`main`) where sequential
   // file fetches could mix versions across concurrent commits.
   const detail = lastError ? ` (${lastError.message || String(lastError)})` : '';

@@ -287,7 +287,7 @@ test('2. Commit SHA lock fails closed when GitHub commit API fails or rate-limit
       bootstrapRuntimeIntoSkillDir({
         skillDir: unbootstrappedDir,
         fetchText: async (url) => {
-          if (url.includes('/commits/')) {
+          if (url.includes('/commits/') || url.includes('/info/refs')) {
             throw new Error('HTTP 429 rate limit exceeded');
           }
           rawFetchCount += 1;

@@ -4004,11 +4004,34 @@ function parseUpdateSourceSpec(opts = {}) {
   };
 }
 
+function parseGitSmartRefsCommitSha(body, refName) {
+  if (typeof body !== 'string' || !body) return '';
+  const targetRefs =
+    refName === 'main' || refName === 'HEAD'
+      ? ['refs/heads/main', 'HEAD']
+      : [`refs/tags/${refName}^{}`, `refs/tags/${refName}`, `refs/heads/${refName}`];
+  const map = new Map();
+  for (const rawLine of body.split(/\r?\n/)) {
+    const line = /^[0-9a-f]{4}[0-9a-f]{40}\s/i.test(rawLine) ? rawLine.slice(4) : rawLine;
+    const nulIdx = line.indexOf('\0');
+    const clean = (nulIdx >= 0 ? line.slice(0, nulIdx) : line).trim();
+    const m = clean.match(/^([0-9a-f]{40})\s+(\S+)$/i);
+    if (m) {
+      map.set(m[2], m[1].toLowerCase());
+    }
+  }
+  for (const candidate of targetRefs) {
+    const sha = map.get(candidate);
+    if (sha && IMMUTABLE_COMMIT_SHA_RE.test(sha)) return sha;
+  }
+  return '';
+}
+
 async function resolveImmutableGitHubCommitSha(spec, refName, opts = {}) {
   if (!spec || spec.mode === 'local-dir' || !spec.apiBaseUrl) return '';
   const cleanRef = String(refName || '').trim();
   if (!cleanRef) return '';
-  if (/^[0-9a-f]{40}$/i.test(cleanRef)) {
+  if (IMMUTABLE_COMMIT_SHA_RE.test(cleanRef.toLowerCase())) {
     return cleanRef.toLowerCase();
   }
 
@@ -4028,12 +4051,31 @@ async function resolveImmutableGitHubCommitSha(spec, refName, opts = {}) {
       if (res.statusCode === 200 && res.body.trim()) {
         const json = JSON.parse(res.body);
         const sha = typeof json?.sha === 'string' ? json.sha.trim().toLowerCase() : '';
-        if (/^[0-9a-f]{40}$/.test(sha)) {
+        if (IMMUTABLE_COMMIT_SHA_RE.test(sha)) {
           return sha;
         }
       }
     } catch {
-      // Fall back gracefully if GitHub API is rate-limited
+      // Try Git Smart HTTP info/refs next when REST API is rate-limited
+    }
+  }
+
+  // Rate-limit-proof Git Smart HTTP ref discovery on github.com (still yields a verified 40-hex SHA)
+  if (spec.mode === 'github') {
+    try {
+      const refsUrl = `https://github.com/${spec.repoSlug}.git/info/refs?service=git-upload-pack`;
+      const res = await requestUrlText(refsUrl, {
+        ...opts,
+        accept: 'application/x-git-upload-pack-advertisement',
+      });
+      if (res.statusCode === 200 && res.body) {
+        const smartSha = parseGitSmartRefsCommitSha(res.body, cleanRef);
+        if (IMMUTABLE_COMMIT_SHA_RE.test(smartSha)) {
+          return smartSha;
+        }
+      }
+    } catch {
+      // Caller will fail closed when empty SHA is returned
     }
   }
   return '';
