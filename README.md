@@ -29,6 +29,13 @@ A 100% original, zero-dependency **Antigravity 2.x** account quota suite & **Age
 
 See [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) for deep technical details on Dual-Mode Top-Right mounting, Agent Skill packaging & bootstrap, single-RPC IPC deduplication, ASAR surgical patching, GitHub online hot-update staging, and the L0–L4 discovery chain.
 
+### Platform Verification Status
+
+| Platform | Status | Notes |
+| :--- | :--- | :--- |
+| **Windows 10 / 11** | **Verified (Production)** | Tested end-to-end on real hardware (Antigravity `v2.32.x`, Node.js `v20+` / `v24+`) across Top-Right HUD, Native Sidecar, `/agy-quota` Skill, CLI/OAuth, Standalone Web UI, and `SessionStart` self-heal. |
+| **macOS & Linux** | **Experimental (Unverified on Real Hardware)** | Cross-platform paths and L3 process discovery (`ps` + `lsof` on macOS, `/proc` + `ss` on Linux) are implemented, **but have not been tested on physical macOS or Linux machines**. Start with zero-patch modes (`--skill`, `--sidecar`, `--oauth`, `--standalone`) first; issues & PRs welcome. |
+
 ---
 
 ## What's New in v1.3.2 & Key Highlights

@@ -29,6 +29,13 @@
 
 关于双模自适应右上角挂载、Agent Skill 双目录自举架构、单次 RPC 拦截去重、ASAR 手术刀改写、GitHub 在线校验热升级及 L0~L4 连接发现链的技术细节，请参阅：[架构说明 (docs/ARCHITECTURE.md)](./docs/ARCHITECTURE.md)。
 
+### 平台支持与真机验证状态
+
+| 操作系统 | 当前状态 | 说明 |
+| :--- | :--- | :--- |
+| **Windows 10 / 11** | **已完成真机全量验证** | 已在真实 Windows 环境（Antigravity `v2.32.x`、Node.js `v20+` / `v24+`）完整跑通右上角半环看板、原生右侧栏、`/agy-quota` Skill、CLI/OAuth、Standalone 网页及客户端升级自愈。 |
+| **macOS & Linux** | **实验性支持（暂未做真机实测）** | 代码中已实现跨平台路径与 L3 进程/端口探测逻辑（macOS `ps` + `lsof`、Linux `/proc` + `ss`），但**尚未在 macOS / Linux 实机上人工验证**。在这些平台建议优先使用零补丁模式（`--skill`、`--sidecar`、`--oauth`、`--standalone`），欢迎反馈 Issue 或 PR。 |
+
 ---
 
 ## v1.3.2 全新升级与核心特性
