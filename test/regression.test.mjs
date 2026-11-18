@@ -789,3 +789,233 @@ test('9. Custom skill directory updates end-to-end, and zero-target updates fail
     else process.env.AGY_QUOTA_SKILL_DIR = prevSkillEnv;
   }
 });
+
+test('10. Git Smart HTTP info/refs fallback resolves immutable 40-char SHA when GitHub REST API returns 403/429', async (t) => {
+  const workDir = makeTempDir('smart-http-fallback');
+  t.after(() => rmSync(workDir, { recursive: true, force: true }));
+
+  const smartCommitSha = 'f0e1d2c3b4a5968778695a4b3c2d1e0f9a8b7c6d';
+  const annotatedTagObjSha = '1111111111111111111111111111111111111111';
+  const fixtureDir = join(workDir, 'remote-v140');
+  createVersionedUpdateFixture(fixtureDir, '1.4.0');
+  // Ensure remaining bootstrap-only static files (README, LICENSE, NOTICE, logo.svg) also exist
+  for (const relPath of BOOTSTRAP_FILES) {
+    const p = join(fixtureDir, ...relPath.split('/'));
+    if (!existsSync(p)) {
+      mkdirSync(dirname(p), { recursive: true });
+      cpSync(join(REPO_ROOT, ...relPath.split('/')), p);
+    }
+  }
+
+  let commitApiCalls = 0;
+  let smartHttpRefsCalls = 0;
+
+  // Authentic Git Smart HTTP pkt-line advertisement (with peeled annotated tag ^{} and NUL capabilities)
+  const pktLines = [
+    '001e# service=git-upload-pack\n0000',
+    `004f${smartCommitSha} HEAD\0multi_ack thin-pack side-band ofs-delta\n`,
+    `003f${smartCommitSha} refs/heads/main\n`,
+    `0042${annotatedTagObjSha} refs/tags/v${SKILL_BUNDLE_VERSION}\n`,
+    `0045${smartCommitSha} refs/tags/v${SKILL_BUNDLE_VERSION}^{}\n`,
+    '0000',
+  ].join('');
+
+  const mockGitServer = http.createServer((req, res) => {
+    const reqUrl = req.url || '';
+    if (reqUrl.includes('/releases/latest') || reqUrl.includes('/commits/')) {
+      commitApiCalls += 1;
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ message: 'API rate limit exceeded for shared IP' }));
+      return;
+    }
+    if (reqUrl.includes('/info/refs?service=git-upload-pack')) {
+      smartHttpRefsCalls += 1;
+      res.writeHead(200, { 'Content-Type': 'application/x-git-upload-pack-advertisement' });
+      res.end(pktLines);
+      return;
+    }
+    const rawPrefix = `/awu5425/agy-quota/${smartCommitSha}/`;
+    if (reqUrl.startsWith(rawPrefix)) {
+      const relPath = decodeURIComponent(reqUrl.slice(rawPrefix.length));
+      const fullPath = join(fixtureDir, ...relPath.split('/'));
+      if (existsSync(fullPath)) {
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end(readFileSync(fullPath, 'utf8'));
+        return;
+      }
+    }
+    res.writeHead(404);
+    res.end('Not Found');
+  });
+
+  await new Promise((r) => mockGitServer.listen(0, '127.0.0.1', r));
+  t.after(() => mockGitServer.close());
+  const baseUrl = `http://127.0.0.1:${mockGitServer.address().port}`;
+
+  // 10A. quotaCore checkSelfUpdate + applySelfUpdate succeeds via Smart HTTP SHA lock
+  const targetSkillDir = join(workDir, 'installed-skill');
+  installSkillBundle({ target: targetSkillDir });
+
+  const checkRes = await quotaCore.checkSelfUpdate({
+    [quotaCore.TEST_SOURCE_OVERRIDE_SYM]: {
+      apiBaseUrl: baseUrl,
+      rawBaseUrl: baseUrl,
+      gitOriginBase: baseUrl,
+    },
+    force: true,
+    noPersist: true,
+    currentVersion: SKILL_BUNDLE_VERSION,
+  });
+  assert.equal(checkRes.ok, true, `Smart HTTP checkSelfUpdate failed: ${checkRes.error}`);
+  assert.equal(checkRes.targetRef, smartCommitSha);
+  assert.equal(checkRes.latestVersion, '1.4.0');
+  assert.ok(commitApiCalls >= 1, 'should attempt REST commits API first');
+  assert.ok(smartHttpRefsCalls >= 1, 'should fall back to Smart HTTP info/refs');
+
+  const applyRes = await quotaCore.applySelfUpdate({
+    [quotaCore.TEST_SOURCE_OVERRIDE_SYM]: {
+      apiBaseUrl: baseUrl,
+      rawBaseUrl: baseUrl,
+      gitOriginBase: baseUrl,
+    },
+    overlayDir: join(workDir, 'no-overlay'),
+    pluginDir: join(workDir, 'no-plugin'),
+    skillDir: targetSkillDir,
+    noPersist: true,
+    currentVersion: SKILL_BUNDLE_VERSION,
+  });
+  assert.equal(applyRes.ok, true, `Smart HTTP applySelfUpdate failed: ${applyRes.error}`);
+  assert.equal(applyRes.targetRef, smartCommitSha);
+  assert.equal(applyRes.updatedVersion, '1.4.0');
+
+  // 10B. Standalone skill runner bootstrap succeeds via Smart HTTP peeled tag SHA lock
+  const httpFetchText = (url) =>
+    new Promise((resolveBody, rejectBody) => {
+      http
+        .get(url, (res) => {
+          let d = '';
+          res.setEncoding('utf8');
+          res.on('data', (c) => {
+            d += c;
+          });
+          res.on('end', () => {
+            if (res.statusCode === 200) resolveBody(d);
+            else rejectBody(new Error(`HTTP ${res.statusCode} fetching ${url}`));
+          });
+        })
+        .on('error', rejectBody);
+    });
+
+  const bootstrappedDir = join(workDir, 'bootstrapped-via-smart-http');
+  const cliPath = await bootstrapRuntimeIntoSkillDir({
+    skillDir: bootstrappedDir,
+    fetchText: httpFetchText,
+    apiBase: baseUrl,
+    rawBase: baseUrl,
+    gitOriginBase: baseUrl,
+  });
+  assert.equal(existsSync(cliPath), true);
+  const bootMeta = JSON.parse(readFileSync(join(bootstrappedDir, 'installed-version.json'), 'utf8'));
+  assert.equal(bootMeta.targetRef, smartCommitSha, 'peeled ^{} commit SHA must be selected over tag object SHA');
+  assert.equal(bootMeta.version, '1.4.0');
+});
+
+test('11. True ASAR write-back failure inside rewriteAsarPreloadSurgical cleans .tmp, preserves ASAR & capsule backups, and recovers on retry', async (t) => {
+  const workDir = makeTempDir('asar-writeback-fail');
+  t.after(() => rmSync(workDir, { recursive: true, force: true }));
+
+  const capsuleSnippet = [
+    '/* === AGY_CONTEXT_CAPSULE_START === */',
+    'globalThis.__CAPSULE_WRITEBACK_TEST__ = 42;',
+    '/* === AGY_CONTEXT_CAPSULE_END === */',
+  ].join('\n');
+  const initialPreload = `"use strict";\nconst basePreload = true;\n${capsuleSnippet}\n`;
+  const initialPayload = 'console.log("capsule writeback recovery test");\n';
+
+  const asarPath = join(workDir, 'app.asar');
+  const stateDir = join(workDir, 'state');
+  const sharedDataDir = join(workDir, 'shared');
+  const capsulePayloadPath = join(workDir, 'context-capsule-payload.js');
+
+  writeFileSync(
+    asarPath,
+    buildMinimalAsarBuffer({
+      'package.json': JSON.stringify({ name: 'antigravity', version: '2.32.2' }),
+      'dist/preload.js': initialPreload,
+    }),
+  );
+  writeFileSync(capsulePayloadPath, initialPayload, 'utf8');
+
+  await installMeterOverlay({
+    asarPath,
+    stateDir,
+    sharedDataDir,
+    capsulePayloadPath,
+    migrateCapsule: true,
+    skipCdp: true,
+    skipCompanionRestore: true,
+  });
+
+  const installedAsarBytes = readFileSync(asarPath);
+  const backupsDir = join(sharedDataDir, 'backups');
+
+  // Simulate a true OS file-lock failure right at the ASAR write-back stage:
+  // inspectAsarFast(asarPath) SUCCEEDS, temporary ASAR build & verification SUCCEED,
+  // renameImpl throws EPERM AND fallback openImpl('r+') throws EBUSY!
+  let renameAttempted = false;
+  let rplusOpenAttempted = false;
+  await assert.rejects(
+    () =>
+      uninstallMeterOverlay({
+        asarPath,
+        stateDir,
+        sharedDataDir,
+        capsulePayloadPath,
+        skipCdp: true,
+        asarFsOps: {
+          renameImpl: () => {
+            renameAttempted = true;
+            const e = new Error('EPERM: app.asar locked by running Electron process');
+            e.code = 'EPERM';
+            throw e;
+          },
+          openImpl: () => {
+            rplusOpenAttempted = true;
+            const e = new Error('EBUSY: exclusive lock held on app.asar');
+            e.code = 'EBUSY';
+            throw e;
+          },
+        },
+      }),
+    /EBUSY/,
+  );
+
+  assert.equal(renameAttempted, true, 'must reach atomic rename step inside rewriteAsarPreloadSurgical');
+  assert.equal(rplusOpenAttempted, true, 'must reach inplace r+ fallback step inside rewriteAsarPreloadSurgical');
+
+  // Verify zero leaked .tmp files, intact ASAR bytes, and intact capsule recovery backups!
+  const tmpLeaks = readdirSync(workDir).filter((n) => n.endsWith('.tmp'));
+  assert.deepEqual(tmpLeaks, [], 'failed ASAR write-back must not leak temporary .tmp files');
+  assert.equal(Buffer.compare(readFileSync(asarPath), installedAsarBytes), 0, 'original ASAR bytes must remain uncorrupted');
+  assert.equal(existsSync(join(backupsDir, 'capsule-migration.json')), true);
+  assert.equal(existsSync(join(backupsDir, 'context-capsule-preload-block.js.bak')), true);
+  assert.equal(existsSync(join(backupsDir, 'context-capsule-payload.js.bak')), true);
+
+  // Once the lock clears, retrying uninstallMeterOverlay restores everything 100%!
+  const recovered = await uninstallMeterOverlay({
+    asarPath,
+    stateDir,
+    sharedDataDir,
+    capsulePayloadPath,
+    skipCdp: true,
+  });
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.restoredCapsule, true);
+
+  const finalInspect = inspectAsarFast(asarPath);
+  assert.equal(finalInspect.hasOverlayMarker, false);
+  assert.equal(finalInspect.hasCapsuleMarker, true);
+  assert.ok(finalInspect.preloadSource.includes('__CAPSULE_WRITEBACK_TEST__'));
+  assert.equal(readFileSync(capsulePayloadPath, 'utf8'), initialPayload);
+  assert.equal(existsSync(join(backupsDir, 'capsule-migration.json')), false);
+});

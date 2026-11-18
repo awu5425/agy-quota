@@ -3983,6 +3983,9 @@ function parseUpdateSourceSpec(opts = {}) {
     const rawOverride = String(testOverride.rawBaseUrl || testOverride.baseUrl || '')
       .trim()
       .replace(/\/+$/, '');
+    const gitOriginOverride = String(testOverride.gitOriginBase || '')
+      .trim()
+      .replace(/\/+$/, '');
 
     return {
       mode: apiOverride || rawOverride ? 'custom-http' : 'github',
@@ -3990,6 +3993,7 @@ function parseUpdateSourceSpec(opts = {}) {
       repoSlug,
       apiBaseUrl: apiOverride || TRUSTED_GITHUB_API_BASE,
       rawBaseUrl: rawOverride || TRUSTED_GITHUB_RAW_BASE,
+      gitOriginBase: gitOriginOverride,
       cacheKey: `${apiOverride || 'github'}:${repoSlug}`,
     };
   }
@@ -4000,6 +4004,7 @@ function parseUpdateSourceSpec(opts = {}) {
     repoSlug: DEFAULT_UPDATE_REPO,
     apiBaseUrl: TRUSTED_GITHUB_API_BASE,
     rawBaseUrl: TRUSTED_GITHUB_RAW_BASE,
+    gitOriginBase: 'https://github.com',
     cacheKey: `github:${DEFAULT_UPDATE_REPO}`,
   };
 }
@@ -4061,9 +4066,10 @@ async function resolveImmutableGitHubCommitSha(spec, refName, opts = {}) {
   }
 
   // Rate-limit-proof Git Smart HTTP ref discovery on github.com (still yields a verified 40-hex SHA)
-  if (spec.mode === 'github') {
+  const smartOrigin = spec.mode === 'github' ? 'https://github.com' : spec.gitOriginBase;
+  if (smartOrigin) {
     try {
-      const refsUrl = `https://github.com/${spec.repoSlug}.git/info/refs?service=git-upload-pack`;
+      const refsUrl = `${smartOrigin}/${spec.repoSlug}.git/info/refs?service=git-upload-pack`;
       const res = await requestUrlText(refsUrl, {
         ...opts,
         accept: 'application/x-git-upload-pack-advertisement',

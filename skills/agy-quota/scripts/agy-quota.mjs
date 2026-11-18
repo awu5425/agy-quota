@@ -255,11 +255,17 @@ export async function bootstrapRuntimeIntoSkillDir({
   fetchText = defaultFetchText,
   apiBase = 'https://api.github.com',
   rawBase = 'https://raw.githubusercontent.com',
+  gitOriginBase = 'https://github.com',
   renameImpl = renameSync,
   cpImpl = cpSync,
 } = {}) {
   // Resolve immutable 40-char commit SHA BEFORE creating any staging directory or writing files
-  const lockedRef = await resolveLockedCommitRef(fetchText, apiBase, TRUSTED_BOOTSTRAP_REPO);
+  const lockedRef = await resolveLockedCommitRef(
+    fetchText,
+    apiBase,
+    TRUSTED_BOOTSTRAP_REPO,
+    gitOriginBase,
+  );
   if (!IMMUTABLE_SHA_RE.test(lockedRef)) {
     throw new Error('Refusing bootstrap without verified 40-char commit SHA');
   }

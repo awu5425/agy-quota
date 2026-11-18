@@ -394,7 +394,9 @@ function writeBufferFull(fd, buffer, position = 0) {
   }
 }
 
-export function rewriteAsarPreloadSurgical(asarPath, newPreloadSource) {
+export function rewriteAsarPreloadSurgical(asarPath, newPreloadSource, fsOps = {}) {
+  const renameImpl = typeof fsOps?.renameImpl === 'function' ? fsOps.renameImpl : renameSync;
+  const openImpl = typeof fsOps?.openImpl === 'function' ? fsOps.openImpl : openSync;
   new vm.Script(newPreloadSource, { filename: 'dist/preload.js' });
 
   const origAsar = readFileSync(asarPath);
@@ -473,18 +475,25 @@ export function rewriteAsarPreloadSurgical(asarPath, newPreloadSource) {
 
   let writeStrategy = 'atomic-rename';
   try {
-    renameSync(tmpPath, asarPath);
+    renameImpl(tmpPath, asarPath);
   } catch (renameErr) {
     const code = renameErr && renameErr.code;
     if (code === 'EPERM' || code === 'EBUSY' || code === 'EACCES') {
       writeStrategy = 'inplace-rplus';
-      const fd = openSync(asarPath, 'r+');
+      let fd = null;
       try {
+        fd = openImpl(asarPath, 'r+');
         writeBufferFull(fd, finalBuf, 0);
         ftruncateSync(fd, finalBuf.length);
         fsyncSync(fd);
       } finally {
-        closeSync(fd);
+        if (fd !== null) {
+          try {
+            closeSync(fd);
+          } catch {
+            // ignore close error
+          }
+        }
         rmSync(tmpPath, { force: true });
       }
     } else {
@@ -1620,7 +1629,7 @@ export async function uninstallMeterOverlay(options = {}) {
   });
   let asarResult = { writeStrategy: 'unchanged' };
   if (cleanedPreload !== currentInspect.preloadSource) {
-    asarResult = rewriteAsarPreloadSurgical(asarPath, cleanedPreload);
+    asarResult = rewriteAsarPreloadSurgical(asarPath, cleanedPreload, options.asarFsOps);
   }
 
   if (hasMigrationMarker) {
