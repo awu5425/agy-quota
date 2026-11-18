@@ -14,6 +14,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -275,8 +276,17 @@ async function main() {
   process.exitCode = await runForward(cliPath, process.argv.slice(2));
 }
 
+function safeRealpath(p) {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+}
+
 const isDirectEntry =
-  Boolean(process.argv[1]) && resolve(process.argv[1]).toLowerCase() === __filename.toLowerCase();
+  Boolean(process.argv[1]) &&
+  safeRealpath(process.argv[1]).toLowerCase() === safeRealpath(__filename).toLowerCase();
 
 if (isDirectEntry) {
   main().catch((err) => {

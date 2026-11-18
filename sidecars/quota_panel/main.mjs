@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import http from 'node:http';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -212,8 +212,17 @@ function hasCliInvocationFlag(argv) {
   ));
 }
 
+function safeRealpath(p) {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+}
+
 const isDirectEntry =
-  Boolean(process.argv[1]) && resolve(process.argv[1]).toLowerCase() === __filename.toLowerCase();
+  Boolean(process.argv[1]) &&
+  safeRealpath(process.argv[1]).toLowerCase() === safeRealpath(__filename).toLowerCase();
 
 if (isDirectEntry) {
   const args = process.argv.slice(2);

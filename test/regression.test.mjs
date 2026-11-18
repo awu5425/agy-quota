@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import http from 'node:http';
@@ -386,6 +387,17 @@ test('3. Self-contained skill bundle includes unified manifest, switches to Side
       `missing ${rel} in sidecar target`,
     );
   }
+
+  // Verify invoking scripts/agy-quota.mjs through a symlink/junction (common in ~/.gemini/config/skills) works
+  const junctionDir = join(workDir, 'junction-skill');
+  symlinkSync(skillTarget, junctionDir, process.platform === 'win32' ? 'junction' : 'dir');
+  const junctionProc = spawnSync(
+    process.execPath,
+    [join(junctionDir, 'scripts', 'agy-quota.mjs'), '--version'],
+    { cwd: workDir, encoding: 'utf8' },
+  );
+  assert.equal(junctionProc.status, 0);
+  assert.equal(junctionProc.stdout.trim(), '1.3.1');
 
   // Simulate broken source missing README.md -> must fail pre-flight without leaving half-installed target
   const brokenSource = join(workDir, 'broken-source');

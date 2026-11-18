@@ -9,6 +9,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  realpathSync,
   readSync,
   renameSync,
   rmSync,
@@ -1934,8 +1935,17 @@ async function runCli() {
   }
 }
 
+function safeRealpath(p) {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+}
+
 const isDirectEntry =
-  process.argv[1] && resolve(process.argv[1]).toLowerCase() === __filename.toLowerCase();
+  Boolean(process.argv[1]) &&
+  safeRealpath(process.argv[1]).toLowerCase() === safeRealpath(__filename).toLowerCase();
 
 if (isDirectEntry) {
   runCli().catch((err) => {
