@@ -82,7 +82,7 @@ async function importSidecarSdk() {
   throw lastErr;
 }
 
-const CLI_HELP_TEXT = `AGY Quota v1.3.3 Sidecar & CLI
+const CLI_HELP_TEXT = `AGY Quota v1.3.4 Sidecar & CLI
 
 Usage:
   node main.mjs --cli [options]       Render colored quota dashboard in terminal

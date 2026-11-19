@@ -43,9 +43,9 @@ When the user runs `/agy-quota` with no arguments or asks how much quota remains
    ```
    *(If no local Language Server is running on a headless machine, retry with `--oauth --json --mask`.)*
 2. Summarize concisely from the JSON output:
-   - **Account & Mode**: `userInfo.tier` (e.g. `Google AI Ultra` / `Google AI Pro`), masked `userInfo.email`, and `poolMode` (`2-pool` on Ultra where Carbon/Argon/Hydrogen/Flash share `Gemini`, vs `3-pool` on Pro where `Argon` has an independent weekly bucket).
+   - **Account & Mode**: `userInfo.tier` (e.g. `Google AI Ultra` / `Google AI Pro`), masked `userInfo.email`, and `poolMode` (`2-pool` on Ultra where Neon/Carbon/Argon/Hydrogen/Flash share `Gemini`, vs `3-pool` on Pro where `Argon` has an independent weekly bucket).
    - **Quota Pools (`pools[]`)**: `5h` remaining `%` & `resetTime`, `weekly.remaining` `%` & `weekly.resetTime`, burn rate `prediction.usageRate` (`pp/h`, computed over actual observed elapsed span) & `prediction.runway`, and `familySummary`.
-   - **90m Per-Model Burn (`history.modelSummaries[]`)**: Which base models (`Carbon`, `Argon`, `Hydrogen`, `3.8 Flash`, `Opus`, `Sonnet`, `GPT-OSS`) actively consumed quota (`totalPp`, `usageRatePp`, `calls`).
+   - **90m Per-Model Burn (`history.modelSummaries[]`)**: Which base models (`Neon`, `Carbon`, `Argon`, `Hydrogen`, `3.8 Flash`, `Opus`, `Sonnet`, `GPT-OSS`) actively consumed quota (`totalPp`, `usageRatePp`, `calls`).
    - **Credits (`credits`)**: `prompt`, `flow`, and `userCredits` (`Google One AI`).
    - **Budget Tip**: If any pool is below `30%` and its runway is shorter than `resetTime`, suggest switching heavy subtasks to a healthier pool (e.g. `Claude / GPT`) or lighter family (`3.8 Flash`) until reset.
 

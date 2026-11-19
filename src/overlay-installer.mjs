@@ -51,9 +51,9 @@ const COMPANION_FILES = ['quota-core.cjs', 'overlay-preload.cjs', 'meter-overlay
 function readRepoVersion() {
   try {
     const pkg = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'));
-    return pkg.version || '1.3.3';
+    return pkg.version || '1.3.4';
   } catch {
-    return '1.3.3';
+    return '1.3.4';
   }
 }
 

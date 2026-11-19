@@ -1129,3 +1129,266 @@ test('12. Sandboxed Electron preload (sandbox: true, no node:fs) boots embedded 
   assert.equal(afterStatus.ok, true);
   assert.equal(afterStatus.hasSandboxBootMarker, true);
 });
+
+test('13. Gemini 4 Neon & Orchestrator (Neon) map to Gemini pool, attribute 90m trend accurately, and highlight active pool in core & overlay UI', async (t) => {
+  const now = 1_795_050_000_000;
+  const reset5hIso = new Date(now + 4 * 3_600_000).toISOString();
+  const reset3pIso = new Date(now + 4.5 * 3_600_000).toISOString();
+  const resetWeeklyIso = new Date(now + 6 * 86_400_000).toISOString();
+
+  const userStatusPayload = {
+    userStatus: {
+      name: 'Neon Tester',
+      email: 'neon@example.com',
+      userTier: { id: 'g1-pro-tier', name: 'Google AI Pro' },
+      cascadeModelConfigData: {
+        defaultOverrideModelConfig: { modelOrAlias: { model: 'MODEL_PLACEHOLDER_M537' } },
+        clientModelConfigs: [
+          {
+            label: 'Gemini 4 Neon (High)',
+            modelOrAlias: { model: 'MODEL_PLACEHOLDER_M532' },
+            quotaInfo: { remainingFraction: 0.79, resetTime: reset5hIso },
+          },
+          {
+            label: 'Gemini 4 Neon (Medium)',
+            modelOrAlias: { model: 'MODEL_PLACEHOLDER_M533' },
+            quotaInfo: { remainingFraction: 0.79, resetTime: reset5hIso },
+          },
+          {
+            label: 'Gemini 4 Neon (Low)',
+            modelOrAlias: { model: 'MODEL_PLACEHOLDER_M534' },
+            quotaInfo: { remainingFraction: 0.79, resetTime: reset5hIso },
+          },
+          {
+            label: 'Gemini 4 Neon (XHigh)',
+            modelOrAlias: { model: 'MODEL_PLACEHOLDER_M535' },
+            quotaInfo: { remainingFraction: 0.79, resetTime: reset5hIso },
+          },
+          {
+            label: 'Orchestrator (Neon)',
+            modelOrAlias: { model: 'MODEL_PLACEHOLDER_M537' },
+            quotaInfo: { remainingFraction: 0.79, resetTime: reset5hIso },
+          },
+          {
+            label: 'Gemini 4 Hydrogen (Medium)',
+            modelOrAlias: { model: 'MODEL_PLACEHOLDER_M526' },
+            quotaInfo: { remainingFraction: 0.79, resetTime: reset5hIso },
+          },
+          {
+            label: 'Gemini 3.8 Flash (High)',
+            modelOrAlias: { model: 'MODEL_PLACEHOLDER_M318' },
+            quotaInfo: { remainingFraction: 0.79, resetTime: reset5hIso },
+          },
+          {
+            label: 'Claude Opus 5.5 (Low)',
+            modelOrAlias: { model: 'MODEL_PLACEHOLDER_M400' },
+            quotaInfo: { remainingFraction: 1, resetTime: reset3pIso },
+          },
+          {
+            label: 'Claude Opus 5.5 (Medium)',
+            modelOrAlias: { model: 'MODEL_PLACEHOLDER_M401' },
+            quotaInfo: { remainingFraction: 1, resetTime: reset3pIso },
+          },
+          {
+            label: 'Claude Opus 5.5 (High)',
+            modelOrAlias: { model: 'MODEL_PLACEHOLDER_M402' },
+            quotaInfo: { remainingFraction: 1, resetTime: reset3pIso },
+          },
+          {
+            label: 'Claude Sonnet 5.5 (Low)',
+            modelOrAlias: { model: 'MODEL_PLACEHOLDER_M403' },
+            quotaInfo: { remainingFraction: 1, resetTime: reset3pIso },
+          },
+          {
+            label: 'Claude Sonnet 5.5 (Medium)',
+            modelOrAlias: { model: 'MODEL_PLACEHOLDER_M404' },
+            quotaInfo: { remainingFraction: 1, resetTime: reset3pIso },
+          },
+          {
+            label: 'Claude Sonnet 5.5 (High)',
+            modelOrAlias: { model: 'MODEL_PLACEHOLDER_M405' },
+            quotaInfo: { remainingFraction: 1, resetTime: reset3pIso },
+          },
+          {
+            label: 'Gemini 4 Carbon',
+            modelOrAlias: { model: 'MODEL_PLACEHOLDER_M670' },
+            disabled: true,
+          },
+        ],
+      },
+    },
+  };
+
+  const summaryPayload = {
+    response: {
+      groups: [
+        {
+          displayName: 'Gemini Models',
+          description:
+            'Models within this group: Gemini 4 Neon, Gemini 4 Hydrogen, Orchestrator (Neon), Gemini 3.8 Flash',
+          buckets: [
+            { bucketId: 'gemini-5h', window: '5h', remainingFraction: 0.86, resetTime: reset5hIso },
+            { bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.92, resetTime: resetWeeklyIso },
+          ],
+        },
+        {
+          displayName: 'Claude and GPT models',
+          description: 'Models within this group: Claude Opus 5.5, Claude Sonnet 5.5, GPT-OSS 120B',
+          buckets: [
+            { bucketId: '3p-5h', window: '5h', remainingFraction: 1, resetTime: reset3pIso },
+            { bucketId: '3p-weekly', window: 'weekly', remainingFraction: 1, resetTime: resetWeeklyIso },
+          ],
+        },
+      ],
+    },
+  };
+
+  // 13A. Core quota-core.cjs classification, trend attribution & Opus M400-M402 mapping
+  const snap = quotaCore.parseSnapshot(userStatusPayload, summaryPayload, {
+    now,
+    source: 'test',
+    readOnly: true,
+    disablePricingLedger: true,
+    seedPoints: [{ ts: now - 5 * 60_000, pools: { gemini: 90, 'non-google': 100 } }],
+    modelCalls: [
+      {
+        model: 'Orchestrator (Neon)',
+        modelKey: null,
+        modelExactId: 'model_placeholder_m537',
+        inputTokens: 120_000,
+        outputTokens: 1200,
+        costUSD: 0,
+        ts: now - 30_000,
+      },
+      {
+        model: '',
+        modelKey: '',
+        modelExactId: 'MODEL_PLACEHOLDER_M400',
+        inputTokens: 50_000,
+        outputTokens: 800,
+        costUSD: 0.05,
+        ts: now - 20_000,
+      },
+    ],
+  });
+
+  const orchNeon = snap.models.find((m) => m.label === 'Orchestrator (Neon)');
+  assert.ok(orchNeon, 'Orchestrator (Neon) should be present in models');
+  assert.equal(orchNeon.poolId, 'gemini');
+  assert.equal(orchNeon.groupId, 'gemini-pro');
+
+  const geminiPool = snap.pools.find((p) => p.id === 'gemini');
+  const nonGooglePool = snap.pools.find((p) => p.id === 'non-google');
+  assert.ok(geminiPool.familySummary.startsWith('Neon'), `expected Gemini familySummary to start with Neon, got: ${geminiPool.familySummary}`);
+  assert.equal(nonGooglePool.modelLabels.includes('Orchestrator (Neon)'), false, 'Orchestrator (Neon) must not leak into non-google pool');
+
+  assert.equal(snap.activeModelHint?.modelId, 'neon');
+  assert.equal(snap.activeModelHint?.label, 'Neon');
+  assert.equal(snap.activeModelHint?.poolId, 'gemini');
+
+  const neonTrend = snap.history.modelSummaries.find((s) => s.modelId === 'neon');
+  const opusTrend = snap.history.modelSummaries.find((s) => s.modelId === 'claude-opus');
+  assert.ok(neonTrend, 'Neon should appear in 90m modelSummaries');
+  assert.equal(neonTrend.label, 'Neon');
+  assert.equal(neonTrend.poolId, 'gemini');
+  assert.equal(neonTrend.calls, 1);
+  assert.ok(opusTrend, 'MODEL_PLACEHOLDER_M400 should classify as claude-opus');
+  assert.equal(opusTrend.poolId, 'non-google');
+  assert.equal(opusTrend.calls, 1);
+
+  // 13B. Overlay UI (src/meter-overlay-ui.js) direct parser & active pool highlighting in mocked DOM
+  const uiCode = readFileSync(join(REPO_ROOT, 'src', 'meter-overlay-ui.js'), 'utf8');
+  const noop = () => {};
+  const makeStubEl = () => ({
+    style: {},
+    classList: { toggle: noop, add: noop, remove: noop, contains: () => false },
+    setAttribute: noop,
+    getAttribute: () => '',
+    addEventListener: noop,
+    removeEventListener: noop,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+  });
+  const docEl = makeStubEl();
+  const bodyEl = makeStubEl();
+  const storage = new Map();
+  let nextTimerId = 1;
+  const activeTimers = new Set();
+
+  class FakeMutationObserver {
+    observe() {}
+    disconnect() {}
+  }
+
+  const uiCtx = vm.createContext({
+    document: {
+      documentElement: docEl,
+      body: bodyEl,
+      hidden: false,
+      readyState: 'complete',
+      getElementById: () => null,
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      addEventListener: noop,
+      removeEventListener: noop,
+    },
+    window: {
+      addEventListener: noop,
+      removeEventListener: noop,
+      matchMedia: () => ({ matches: true, addEventListener: noop, removeEventListener: noop }),
+    },
+    location: { origin: '', protocol: 'https:' },
+    navigator: { language: 'zh-CN' },
+    localStorage: {
+      getItem: (k) => (storage.has(k) ? storage.get(k) : null),
+      setItem: (k, v) => storage.set(k, String(v)),
+      removeItem: (k) => storage.delete(k),
+    },
+    MutationObserver: FakeMutationObserver,
+    fetch: () => Promise.resolve({ ok: false, status: 404, json: async () => ({}) }),
+    queueMicrotask,
+    setTimeout: (fn) => {
+      const id = nextTimerId++;
+      activeTimers.add(id);
+      return id;
+    },
+    clearTimeout: (id) => {
+      activeTimers.delete(id);
+    },
+    setInterval: () => {
+      const id = nextTimerId++;
+      activeTimers.add(id);
+      return id;
+    },
+    clearInterval: (id) => {
+      activeTimers.delete(id);
+    },
+    URL,
+    Promise,
+  });
+  uiCtx.globalThis = uiCtx;
+  uiCtx.window.top = uiCtx.window;
+
+  vm.runInContext(uiCode, uiCtx, { filename: 'src/meter-overlay-ui.js' });
+  const ctl = uiCtx.__AGY_QUOTA_OVERLAY_CTL__;
+  t.after(() => ctl?.dispose?.());
+  assert.ok(ctl, 'meter-overlay-ui.js must register __AGY_QUOTA_OVERLAY_CTL__');
+
+  const overlaySnap = ctl.parseDirectLsSnapshotForTest(userStatusPayload, summaryPayload, {
+    recentCalls: [{ ts: Date.now() - 30_000, model: 'Orchestrator (Neon)', inputTokens: 100_000, outputTokens: 1000, calls: 1 }],
+  });
+  const overlayGemini = overlaySnap.pools.find((p) => p.id === 'gemini');
+  const overlay3p = overlaySnap.pools.find((p) => p.id === 'non-google');
+  assert.equal(overlay3p.modelLabels.includes('Orchestrator (Neon)'), false);
+  assert.ok(overlayGemini.familySummary.startsWith('Neon'));
+
+  const overlayNeonSummary = overlaySnap.history.modelSummaries.find((s) => s.modelId === 'neon');
+  assert.ok(overlayNeonSummary, 'overlay UI should record Neon in modelSummaries');
+  assert.equal(overlayNeonSummary.label, 'Neon');
+  assert.equal(overlayNeonSummary.poolId, 'gemini');
+
+  ctl.setSnapshotForTest(overlaySnap);
+  assert.equal(ctl.setActiveModelForTest('Orchestrator (Neon)'), 'gemini');
+  assert.equal(ctl.setActiveModelForTest('model_placeholder_m537'), 'gemini');
+  ctl.dispose();
+});

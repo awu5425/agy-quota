@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const APP_VERSION = '1.3.3';
+  const APP_VERSION = '1.3.4';
   const DEFAULT_GITHUB_REPO = 'awu5425/agy-quota';
   const POLL_MS = 60_000;
   const COUNTDOWN_TICK_MS = 30_000;
@@ -16,11 +16,17 @@
   ];
 
   const KNOWN_MODEL_POOL = {
+    MODEL_PLACEHOLDER_M532: 'gemini',
+    MODEL_PLACEHOLDER_M533: 'gemini',
+    MODEL_PLACEHOLDER_M534: 'gemini',
+    MODEL_PLACEHOLDER_M535: 'gemini',
+    MODEL_PLACEHOLDER_M537: 'gemini',
     MODEL_PLACEHOLDER_M417: 'argon',
     MODEL_PLACEHOLDER_M418: 'argon',
     MODEL_PLACEHOLDER_M419: 'argon',
     MODEL_PLACEHOLDER_M668: 'argon',
     MODEL_PLACEHOLDER_M427: 'gemini',
+    MODEL_PLACEHOLDER_M670: 'gemini',
     MODEL_PLACEHOLDER_M318: 'gemini',
     MODEL_PLACEHOLDER_M319: 'gemini',
     MODEL_PLACEHOLDER_M320: 'gemini',
@@ -566,7 +572,8 @@
   function classifyPoolId(rawText = '') {
     const trimmed = String(rawText || '').trim();
     if (!trimmed) return null;
-    if (KNOWN_MODEL_POOL[trimmed]) return KNOWN_MODEL_POOL[trimmed];
+    const exactPool = KNOWN_MODEL_POOL[trimmed] || KNOWN_MODEL_POOL[trimmed.toUpperCase()];
+    if (exactPool) return exactPool;
     const lower = trimmed.toLowerCase();
     if (lower === 'argon' || lower.includes('shared_gemini_argon') || lower.includes('argon')) return 'argon';
     if (
@@ -587,6 +594,7 @@
       lower === 'gemini'
       || lower.includes('shared_gemini')
       || lower.includes('gemini')
+      || lower.includes('neon')
       || lower.includes('carbon')
       || lower.includes('hydrogen')
       || lower.includes('flash')
@@ -657,7 +665,7 @@
         const rawElem = elemMatch[1];
         const name = rawElem.charAt(0).toUpperCase() + rawElem.slice(1).toLowerCase();
         const lower = name.toLowerCase();
-        const rank = lower === 'carbon' ? 10 : (lower === 'argon' ? 20 : (lower === 'hydrogen' ? 30 : 35));
+        const rank = lower === 'neon' ? 10 : (lower === 'carbon' ? 15 : (lower === 'argon' ? 20 : (lower === 'hydrogen' ? 30 : 35)));
         return { name, rank };
       }
       const stripped = lbl.replace(/^Gemini\s+/i, '').trim() || lbl;
@@ -740,7 +748,7 @@
           const base = normalizeModelLabel(part);
           if (!base || base.length > 48) continue;
           if (/\b(?:quota|shared|across|models|limit|window|reset)\b/i.test(base)) continue;
-          if (!/\b(?:gemini|claude|gpt|sonnet|opus|haiku|carbon|argon|hydrogen|flash|orchestrator|openai|o\d)\b/i.test(base)) continue;
+          if (!/\b(?:gemini|claude|gpt|sonnet|opus|haiku|neon|carbon|argon|hydrogen|flash|orchestrator|openai|o\d)\b/i.test(base)) continue;
           const partPid = classifyPoolId(base);
           if (hasArgon && pid === 'gemini' && partPid === 'argon') continue;
           if (pid === 'argon' && partPid && partPid !== 'argon') continue;

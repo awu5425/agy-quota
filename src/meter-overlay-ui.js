@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const OVERLAY_VERSION = '1.3.3';
+  const OVERLAY_VERSION = '1.3.4';
   const CTL_KEY = '__AGY_QUOTA_OVERLAY_CTL__';
   const SNAP_CACHE_KEY = '__AGY_QUOTA_LAST_SNAPSHOT__';
   const UPDATED_BADGE_KEY = '__AGY_QUOTA_UPDATED_BADGE__';
@@ -68,11 +68,17 @@
   ];
 
   const KNOWN_MODEL_POOL = {
+    MODEL_PLACEHOLDER_M532: 'gemini',
+    MODEL_PLACEHOLDER_M533: 'gemini',
+    MODEL_PLACEHOLDER_M534: 'gemini',
+    MODEL_PLACEHOLDER_M535: 'gemini',
+    MODEL_PLACEHOLDER_M537: 'gemini',
     MODEL_PLACEHOLDER_M417: 'argon',
     MODEL_PLACEHOLDER_M418: 'argon',
     MODEL_PLACEHOLDER_M419: 'argon',
     MODEL_PLACEHOLDER_M668: 'argon',
     MODEL_PLACEHOLDER_M427: 'gemini',
+    MODEL_PLACEHOLDER_M670: 'gemini',
     MODEL_PLACEHOLDER_M318: 'gemini',
     MODEL_PLACEHOLDER_M319: 'gemini',
     MODEL_PLACEHOLDER_M320: 'gemini',
@@ -1468,7 +1474,8 @@
   function classifyPoolId(rawText = '') {
     const trimmed = String(rawText || '').trim();
     if (!trimmed) return null;
-    if (KNOWN_MODEL_POOL[trimmed]) return KNOWN_MODEL_POOL[trimmed];
+    const exactPool = KNOWN_MODEL_POOL[trimmed] || KNOWN_MODEL_POOL[trimmed.toUpperCase()];
+    if (exactPool) return exactPool;
     const lower = trimmed.toLowerCase();
     if (lower === 'argon' || lower.includes('shared_gemini_argon') || lower.includes('argon')) return 'argon';
     if (
@@ -1489,6 +1496,7 @@
       lower === 'gemini'
       || lower.includes('shared_gemini')
       || lower.includes('gemini')
+      || lower.includes('neon')
       || lower.includes('carbon')
       || lower.includes('hydrogen')
       || lower.includes('flash')
@@ -1559,7 +1567,7 @@
         const rawElem = elemMatch[1];
         const name = rawElem.charAt(0).toUpperCase() + rawElem.slice(1).toLowerCase();
         const lower = name.toLowerCase();
-        const rank = lower === 'carbon' ? 10 : (lower === 'argon' ? 20 : (lower === 'hydrogen' ? 30 : 35));
+        const rank = lower === 'neon' ? 10 : (lower === 'carbon' ? 15 : (lower === 'argon' ? 20 : (lower === 'hydrogen' ? 30 : 35)));
         return { name, rank };
       }
       const stripped = lbl.replace(/^Gemini\s+/i, '').trim() || lbl;
@@ -1642,7 +1650,7 @@
           const base = normalizeModelLabel(part);
           if (!base || base.length > 48) continue;
           if (/\b(?:quota|shared|across|models|limit|window|reset)\b/i.test(base)) continue;
-          if (!/\b(?:gemini|claude|gpt|sonnet|opus|haiku|carbon|argon|hydrogen|flash|orchestrator|openai|o\d)\b/i.test(base)) continue;
+          if (!/\b(?:gemini|claude|gpt|sonnet|opus|haiku|neon|carbon|argon|hydrogen|flash|orchestrator|openai|o\d)\b/i.test(base)) continue;
           const partPid = classifyPoolId(base);
           if (hasArgon && pid === 'gemini' && partPid === 'argon') continue;
           if (pid === 'argon' && partPid && partPid !== 'argon') continue;
@@ -1773,7 +1781,10 @@
       return prefixWord;
     };
 
-    if (hay.includes('carbon') || /\bm427\b/i.test(rawStr)) {
+    if (hay.includes('neon') || /\bm(?:532|533|534|535|537)\b/i.test(rawStr)) {
+      return { modelId: 'neon', label: 'Neon', poolId: 'gemini', color: '#22D3EE' };
+    }
+    if (hay.includes('carbon') || /\bm(?:427|437|667|670)\b/i.test(rawStr)) {
       return { modelId: 'carbon', label: 'Carbon', poolId: 'gemini', color: '#38BDF8' };
     }
     if (hay.includes('argon') || /\bm(?:417|418|419|668)\b/i.test(rawStr)) {
@@ -1784,7 +1795,7 @@
         color: '#A78BFA',
       };
     }
-    if (hay.includes('hydrogen')) {
+    if (hay.includes('hydrogen') || /\bm(?:525|526|527|528)\b/i.test(rawStr)) {
       return { modelId: 'hydrogen', label: 'Hydrogen', poolId: 'gemini', color: '#34D399' };
     }
     if (hay.includes('flash') || /\bm(?:318|319|320|47)\b/i.test(rawStr)) {
@@ -1801,14 +1812,14 @@
       }
       return { modelId: 'flash', label: label || 'Flash', poolId: 'gemini', color: '#2DD4BF' };
     }
-    if (hay.includes('opus') || /\bm26\b/i.test(rawStr)) {
+    if (hay.includes('opus') || /\bm(?:26|400|401|402)\b/i.test(rawStr)) {
       const vm = hay.match(/opus[-\s_]+(\d+(?:[.-]\d+)?)/i) || hay.match(/claude[-\s_]+(\d+(?:[.-]\d+)?)[-\s_]+opus/i);
       const label = vm && vm[1]
         ? `Opus ${vm[1].replace(/-/g, '.')}`
         : findKnownVersionLabel(/Opus\s+(\d+(?:\.\d+)?)/i, 'Opus');
       return { modelId: 'claude-opus', label, poolId: 'non-google', color: '#FB923C' };
     }
-    if (hay.includes('sonnet') || /\bm(?:35|400|401|402|403|404|405)\b/i.test(rawStr)) {
+    if (hay.includes('sonnet') || /\bm(?:35|403|404|405)\b/i.test(rawStr)) {
       const vm = hay.match(/sonnet[-\s_]+(\d+(?:[.-]\d+)?)/i) || hay.match(/claude[-\s_]+(\d+(?:[.-]\d+)?)[-\s_]+sonnet/i);
       const label = vm && vm[1]
         ? `Sonnet ${vm[1].replace(/-/g, '.')}`

@@ -78,13 +78,18 @@ const QUOTA_POOLS = Object.freeze([
 const MODEL_GROUPS = Object.freeze([
   Object.freeze({ id: 'gemini-argon', poolId: 'argon', label: 'Gemini Argon', color: '#B388FF' }),
   Object.freeze({ id: 'gemini-flash', poolId: 'gemini', label: 'Gemini Flash', color: '#40C4FF' }),
-  Object.freeze({ id: 'gemini-pro', poolId: 'gemini', label: 'Gemini Hydrogen / Pro', color: '#69F0AE' }),
+  Object.freeze({ id: 'gemini-pro', poolId: 'gemini', label: 'Gemini Neon / Pro', color: '#69F0AE' }),
   Object.freeze({ id: 'claude', poolId: 'non-google', label: 'Claude', color: '#FFAB40' }),
   Object.freeze({ id: 'gpt', poolId: 'non-google', label: 'GPT', color: '#FF5252' }),
   Object.freeze({ id: 'other', poolId: 'non-google', label: 'Other', color: '#FFAB40' }),
 ]);
 
 const KNOWN_MODEL_MAP = Object.freeze({
+  MODEL_PLACEHOLDER_M532: 'gemini-pro',
+  MODEL_PLACEHOLDER_M533: 'gemini-pro',
+  MODEL_PLACEHOLDER_M534: 'gemini-pro',
+  MODEL_PLACEHOLDER_M535: 'gemini-pro',
+  MODEL_PLACEHOLDER_M537: 'gemini-pro',
   MODEL_PLACEHOLDER_M417: 'gemini-argon',
   MODEL_PLACEHOLDER_M418: 'gemini-argon',
   MODEL_PLACEHOLDER_M419: 'gemini-argon',
@@ -97,6 +102,7 @@ const KNOWN_MODEL_MAP = Object.freeze({
   MODEL_PLACEHOLDER_M526: 'gemini-pro',
   MODEL_PLACEHOLDER_M527: 'gemini-pro',
   MODEL_PLACEHOLDER_M528: 'gemini-pro',
+  MODEL_PLACEHOLDER_M670: 'gemini-pro',
   MODEL_PLACEHOLDER_M36: 'gemini-pro',
   MODEL_PLACEHOLDER_M37: 'gemini-pro',
   MODEL_PLACEHOLDER_M400: 'claude',
@@ -117,13 +123,13 @@ function groupById(id) {
 }
 
 function classifyModel(modelId = '', label = '') {
-  const exact = KNOWN_MODEL_MAP[String(modelId).trim()];
+  const exact = KNOWN_MODEL_MAP[String(modelId).trim().toUpperCase()];
   if (exact) return groupById(exact);
 
   const hay = `${modelId} ${label}`.toLowerCase();
   if (hay.includes('argon')) return groupById('gemini-argon');
   if (hay.includes('flash')) return groupById('gemini-flash');
-  if (hay.includes('hydrogen') || hay.includes('carbon') || hay.includes('gemini')) {
+  if (hay.includes('neon') || hay.includes('hydrogen') || hay.includes('carbon') || hay.includes('gemini')) {
     return groupById('gemini-pro');
   }
   if (hay.includes('claude')) return groupById('claude');
@@ -949,21 +955,28 @@ const MODEL_LOOKBACK_MS = 90 * 1000;
 const TRANSCRIPT_TAIL_BYTES = 196_608;
 
 const TREND_MODEL_PALETTE = Object.freeze({
-  carbon: Object.freeze({ modelId: 'carbon', defaultLabel: 'Carbon', color: '#38BDF8', order: 1 }),
-  argon: Object.freeze({ modelId: 'argon', defaultLabel: 'Argon', color: '#A78BFA', order: 2 }),
-  hydrogen: Object.freeze({ modelId: 'hydrogen', defaultLabel: 'Hydrogen', color: '#34D399', order: 3 }),
-  flash: Object.freeze({ modelId: 'flash', defaultLabel: 'Flash', color: '#2DD4BF', order: 4 }),
-  'claude-opus': Object.freeze({ modelId: 'claude-opus', defaultLabel: 'Opus', color: '#FB923C', order: 5 }),
-  'claude-sonnet': Object.freeze({ modelId: 'claude-sonnet', defaultLabel: 'Sonnet', color: '#FBBF24', order: 6 }),
-  'claude-haiku': Object.freeze({ modelId: 'claude-haiku', defaultLabel: 'Haiku', color: '#FDE047', order: 7 }),
-  gpt: Object.freeze({ modelId: 'gpt', defaultLabel: 'GPT-OSS', color: '#F472B6', order: 8 }),
-  'gemini-pro': Object.freeze({ modelId: 'gemini-pro', defaultLabel: 'Gemini', color: '#60A5FA', order: 9 }),
+  neon: Object.freeze({ modelId: 'neon', defaultLabel: 'Neon', color: '#22D3EE', order: 1 }),
+  carbon: Object.freeze({ modelId: 'carbon', defaultLabel: 'Carbon', color: '#38BDF8', order: 2 }),
+  argon: Object.freeze({ modelId: 'argon', defaultLabel: 'Argon', color: '#A78BFA', order: 3 }),
+  hydrogen: Object.freeze({ modelId: 'hydrogen', defaultLabel: 'Hydrogen', color: '#34D399', order: 4 }),
+  flash: Object.freeze({ modelId: 'flash', defaultLabel: 'Flash', color: '#2DD4BF', order: 5 }),
+  'claude-opus': Object.freeze({ modelId: 'claude-opus', defaultLabel: 'Opus', color: '#FB923C', order: 6 }),
+  'claude-sonnet': Object.freeze({ modelId: 'claude-sonnet', defaultLabel: 'Sonnet', color: '#FBBF24', order: 7 }),
+  'claude-haiku': Object.freeze({ modelId: 'claude-haiku', defaultLabel: 'Haiku', color: '#FDE047', order: 8 }),
+  gpt: Object.freeze({ modelId: 'gpt', defaultLabel: 'GPT-OSS', color: '#F472B6', order: 9 }),
+  'gemini-pro': Object.freeze({ modelId: 'gemini-pro', defaultLabel: 'Gemini', color: '#60A5FA', order: 10 }),
 });
 
 const KNOWN_TREND_EXACT_MAP = Object.freeze({
+  MODEL_PLACEHOLDER_M532: 'neon',
+  MODEL_PLACEHOLDER_M533: 'neon',
+  MODEL_PLACEHOLDER_M534: 'neon',
+  MODEL_PLACEHOLDER_M535: 'neon',
+  MODEL_PLACEHOLDER_M537: 'neon',
   MODEL_PLACEHOLDER_M427: 'carbon',
   MODEL_PLACEHOLDER_M437: 'carbon',
   MODEL_PLACEHOLDER_M667: 'carbon',
+  MODEL_PLACEHOLDER_M670: 'carbon',
   MODEL_PLACEHOLDER_M417: 'argon',
   MODEL_PLACEHOLDER_M418: 'argon',
   MODEL_PLACEHOLDER_M419: 'argon',
@@ -981,9 +994,9 @@ const KNOWN_TREND_EXACT_MAP = Object.freeze({
   MODEL_PLACEHOLDER_M37: 'gemini-pro',
   MODEL_PLACEHOLDER_M26: 'claude-opus',
   MODEL_PLACEHOLDER_M35: 'claude-sonnet',
-  MODEL_PLACEHOLDER_M400: 'claude-sonnet',
-  MODEL_PLACEHOLDER_M401: 'claude-sonnet',
-  MODEL_PLACEHOLDER_M402: 'claude-sonnet',
+  MODEL_PLACEHOLDER_M400: 'claude-opus',
+  MODEL_PLACEHOLDER_M401: 'claude-opus',
+  MODEL_PLACEHOLDER_M402: 'claude-opus',
   MODEL_PLACEHOLDER_M403: 'claude-sonnet',
   MODEL_PLACEHOLDER_M404: 'claude-sonnet',
   MODEL_PLACEHOLDER_M405: 'claude-sonnet',
@@ -1003,6 +1016,7 @@ function stripModelEffortNoise(raw = '') {
 function detectTrendFamilyFromText(text = '') {
   const lower = String(text || '').toLowerCase();
   if (!lower) return '';
+  if (lower.includes('neon')) return 'neon';
   if (lower.includes('carbon')) return 'carbon';
   if (lower.includes('argon')) return 'argon';
   if (lower.includes('hydrogen')) return 'hydrogen';
@@ -1017,6 +1031,7 @@ function detectTrendFamilyFromText(text = '') {
 }
 
 function extractDynamicTrendLabel(familyId, rawModel = '', modelKey = '', preferredLabels = null) {
+  if (familyId === 'neon') return 'Neon';
   if (familyId === 'carbon') return 'Carbon';
   if (familyId === 'argon') return 'Argon';
   if (familyId === 'hydrogen') return 'Hydrogen';
@@ -1437,7 +1452,7 @@ function inferModelIdAtTimestamp(ts, scopedPoints, activeModelFamilyId, models, 
     const spec = classifyTrendModel(consumed[0].label, '', consumed[0].modelId, hasIndependentArgonPool, null);
     if (spec) return spec.modelId;
   }
-  return 'carbon';
+  return 'neon';
 }
 
 function computeActivityScore(usagePp, calls, weight) {
@@ -3319,10 +3334,10 @@ async function runCliReport(argv = []) {
 }
 
 // ---------------------------------------------------------------------------
-// Self-Update & Online Hot-Upgrade Engine (v1.3.3 — Source-Pinned & Commit-Locked)
+// Self-Update & Online Hot-Upgrade Engine (v1.3.4 — Source-Pinned & Commit-Locked)
 // ---------------------------------------------------------------------------
 
-const QUOTA_CORE_VERSION = '1.3.3';
+const QUOTA_CORE_VERSION = '1.3.4';
 const DEFAULT_UPDATE_REPO = 'awu5425/agy-quota';
 const TRUSTED_GITHUB_API_BASE = 'https://api.github.com';
 const TRUSTED_GITHUB_RAW_BASE = 'https://raw.githubusercontent.com';

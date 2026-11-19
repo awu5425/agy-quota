@@ -1,6 +1,6 @@
-# 架构说明 (Architecture — v1.3.3)
+# 架构说明 (Architecture — v1.3.4)
 
-本文档说明 **AGY Quota (`agy-quota` v1.3.3)** 的共享核心引擎、双模自适应右上角挂载架构（Standalone Top-Right HUD & Zero-Copy Companion Overlay）、自包含 Agent Skill（`/agy-quota`）双布局与自举机制、原生右侧栏可选共存机制、中英双语与宿主主题跟随系统、GitHub 在线热升级链路，以及 L0~L4 五级连接发现链。
+本文档说明 **AGY Quota (`agy-quota` v1.3.4)** 的共享核心引擎、双模自适应右上角挂载架构（Standalone Top-Right HUD & Zero-Copy Companion Overlay）、自包含 Agent Skill（`/agy-quota`）双布局与自举机制、原生右侧栏可选共存机制、中英双语与宿主主题跟随系统、GitHub 在线热升级链路，以及 L0~L4 五级连接发现链。
 
 ---
 
