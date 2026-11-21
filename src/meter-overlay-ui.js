@@ -119,6 +119,14 @@
       flowCredits: 'Flow 积分',
       includedPlan: '按套餐池计费',
       standardRule: '订阅规则生效',
+      creditBalance: '余额',
+      minUsageShort: '起扣 ≥ {n}',
+      belowMinUsage: '低于起扣 {n}',
+      overageReady: '超额可用',
+      creditsNoteEmpty: '当前无可用超额积分 · 默认按上方 5h / 周配额池计费',
+      creditsNoteReady: '优先消耗上方 5h / 周配额池，耗尽后自动扣减超额积分',
+      creditsNoteNoList: '默认按上方 5h / 周配额池计费（未检测到可用超额积分）',
+      creditsZeroTip: '后端未返回 creditAmount（Protobuf 省略 0 值），表示当前可用超额积分为 0；仅在余额 ≥ 起扣门槛且基础池耗尽时触发超额扣减',
       ready: '已就绪',
       stable: '平稳',
       rateUnit: 'pp/h',
@@ -169,6 +177,14 @@
       flowCredits: 'Flow Credits',
       includedPlan: 'Included in plan',
       standardRule: 'Active plan rules',
+      creditBalance: 'Balance',
+      minUsageShort: 'Min ≥ {n}',
+      belowMinUsage: 'Below min {n}',
+      overageReady: 'Overage ready',
+      creditsNoteEmpty: 'No usable overage credits · Billed from 5h / weekly pools above',
+      creditsNoteReady: 'Uses 5h / weekly pools above first; overage credits apply after exhaustion',
+      creditsNoteNoList: 'Billed from 5h / weekly pools above (no overage credits reported)',
+      creditsZeroTip: 'Server omitted creditAmount (Protobuf zero default), meaning 0 usable overage credits; overages apply only once balance ≥ minimum and baseline quota is exhausted',
       ready: 'Ready',
       stable: 'Stable',
       rateUnit: 'pp/h',
@@ -1176,6 +1192,27 @@
       background: color-mix(in srgb, var(--qp-primary) 12%, transparent);
       border: 1px solid color-mix(in srgb, var(--qp-primary) 26%, transparent);
       color: var(--qp-fg);
+    }
+    .agy-qp-scope .credit-pill.is-empty {
+      background: var(--qp-muted);
+      border-color: var(--qp-border);
+      color: var(--qp-fg-2);
+    }
+    .agy-qp-scope .credit-pill.is-usable {
+      background: color-mix(in srgb, var(--qp-ok) 14%, transparent);
+      border-color: color-mix(in srgb, var(--qp-ok) 36%, transparent);
+      color: var(--qp-fg);
+    }
+    .agy-qp-scope .credit-pill-meta {
+      font-size: 9.5px;
+      color: var(--qp-fg-muted);
+      font-weight: 400;
+      margin-left: 3px;
+    }
+    .agy-qp-scope .credit-note {
+      font-size: 10px;
+      line-height: 1.35;
+      color: var(--qp-fg-muted);
     }
     .agy-qp-scope .credit-row {
       display: flex;
@@ -2357,40 +2394,56 @@
       name: userStatus.name || '',
       email: userStatus.email || '',
       tier: tierClean,
+      tierId: userTier.id || '',
       planName: cleanTierValue(planInfo.planName),
     };
 
-    let promptCredits = null;
+    let rawPromptCredits = null;
     const monthlyPrompt = toFinite(planInfo.monthlyPromptCredits);
     const availPrompt = toFinite(planStatus.availablePromptCredits ?? 0);
     if (monthlyPrompt !== null && monthlyPrompt > 0 && availPrompt !== null) {
       const avail = Math.max(0, availPrompt);
-      promptCredits = {
+      rawPromptCredits = {
         available: avail,
         monthly: monthlyPrompt,
         remainingPercentage: clamp((avail / monthlyPrompt) * 100, 0, 100),
       };
     }
 
-    let flowCredits = null;
+    let rawFlowCredits = null;
     const monthlyFlow = toFinite(planInfo.monthlyFlowCredits);
     const availFlow = monthlyFlow !== null ? toFinite(planStatus.availableFlowCredits ?? 0) : null;
     if (monthlyFlow !== null && monthlyFlow > 0 && availFlow !== null) {
       const avail = Math.max(0, availFlow);
-      flowCredits = {
+      rawFlowCredits = {
         available: avail,
         monthly: monthlyFlow,
         remainingPercentage: clamp((avail / monthlyFlow) * 100, 0, 100),
       };
     }
 
-    const userCredits = (userTier.availableCredits || []).map((c) => ({
-      creditType: typeof c.creditType === 'string' && c.creditType.trim() ? c.creditType : 'GOOGLE_ONE_AI',
-      creditAmount: c.creditAmount !== undefined && c.creditAmount !== null ? String(c.creditAmount) : null,
-      minimumCreditAmountForUsage: c.minimumCreditAmountForUsage !== undefined && c.minimumCreditAmountForUsage !== null
-        ? String(c.minimumCreditAmountForUsage)
-        : null,
-    }));
+    const userCredits = (userTier.availableCredits || []).map((c) => {
+      const creditType = typeof c.creditType === 'string' && c.creditType.trim() ? c.creditType.trim() : 'GOOGLE_ONE_AI';
+      const rawAmount = c.creditAmount !== undefined && c.creditAmount !== null && String(c.creditAmount).trim() !== ''
+        ? String(c.creditAmount).trim()
+        : null;
+      const parsedAmount = rawAmount !== null ? toFinite(rawAmount) : null;
+      const availableAmount = parsedAmount !== null ? Math.max(0, parsedAmount) : 0;
+      const rawMin = c.minimumCreditAmountForUsage !== undefined && c.minimumCreditAmountForUsage !== null && String(c.minimumCreditAmountForUsage).trim() !== ''
+        ? String(c.minimumCreditAmountForUsage).trim()
+        : null;
+      const parsedMin = rawMin !== null ? toFinite(rawMin) : null;
+      const minUsageAmount = parsedMin !== null ? Math.max(0, parsedMin) : null;
+      return {
+        creditType,
+        creditAmount: rawAmount,
+        availableAmount,
+        isOmittedAmount: rawAmount === null,
+        minimumCreditAmountForUsage: rawMin,
+        minUsageAmount,
+        usable: availableAmount > 0 && (minUsageAmount === null || availableAmount >= minUsageAmount),
+      };
+    });
 
     const rawModels = userStatus.cascadeModelConfigData?.clientModelConfigs || [];
     const dedupedModelMap = new Map();
@@ -2462,6 +2515,18 @@
         buckets: groupBuckets,
       });
     }
+
+    const tierIdLower = String(userTier.id || '').trim().toLowerCase();
+    const hasGoogleOneCredits = userCredits.some(
+      (uc) => String(uc.creditType || '').toUpperCase() === 'GOOGLE_ONE_AI',
+    );
+    const isPoolBilledPlan = hasGoogleOneCredits
+      || tierIdLower.startsWith('g1-')
+      || tierIdLower === 'free-tier'
+      || bucketsById.size > 0;
+    const billingModel = isPoolBilledPlan ? 'pool-and-overage' : 'legacy-exa';
+    const promptCredits = isPoolBilledPlan ? null : rawPromptCredits;
+    const flowCredits = isPoolBilledPlan ? null : rawFlowCredits;
 
     const hasIndependentArgonPool = detectHasIndependentArgonPool(summaryGroups, parsedModels);
     if (!hasIndependentArgonPool) {
@@ -2599,8 +2664,12 @@
       connection: { source: 'same-origin-direct' },
       userInfo,
       credits: {
+        billingModel,
         prompt: promptCredits,
         flow: flowCredits,
+        ...(isPoolBilledPlan && (rawPromptCredits || rawFlowCredits)
+          ? { legacyPrompt: rawPromptCredits, legacyFlow: rawFlowCredits }
+          : {}),
         userCredits,
       },
       pools,
@@ -3656,6 +3725,40 @@
       .join(' ');
   }
 
+  function normalizeUserCreditItem(uc) {
+    const creditType = formatCreditType(uc?.creditType);
+    const rawAmount = uc?.creditAmount !== null && uc?.creditAmount !== undefined && String(uc.creditAmount).trim() !== ''
+      ? String(uc.creditAmount).trim()
+      : null;
+    const explicitAvail = toFinite(uc?.availableAmount);
+    const parsedRawAvail = rawAmount !== null ? toFinite(rawAmount) : null;
+    const availableAmount = explicitAvail !== null
+      ? Math.max(0, explicitAvail)
+      : (parsedRawAvail !== null ? Math.max(0, parsedRawAvail) : 0);
+
+    const rawMin = uc?.minimumCreditAmountForUsage !== null && uc?.minimumCreditAmountForUsage !== undefined && String(uc.minimumCreditAmountForUsage).trim() !== ''
+      ? String(uc.minimumCreditAmountForUsage).trim()
+      : null;
+    const explicitMin = toFinite(uc?.minUsageAmount);
+    const parsedRawMin = rawMin !== null ? toFinite(rawMin) : null;
+    const minUsageAmount = explicitMin !== null
+      ? Math.max(0, explicitMin)
+      : (parsedRawMin !== null ? Math.max(0, parsedRawMin) : null);
+
+    const isOmittedAmount = typeof uc?.isOmittedAmount === 'boolean' ? uc.isOmittedAmount : rawAmount === null;
+    const usable = typeof uc?.usable === 'boolean'
+      ? uc.usable
+      : (availableAmount > 0 && (minUsageAmount === null || availableAmount >= minUsageAmount));
+
+    return {
+      creditType,
+      availableAmount,
+      isOmittedAmount,
+      minUsageAmount,
+      usable,
+    };
+  }
+
   function renderFooterBarHtml() {
     const u = state.update;
     let statusHtml = '';
@@ -4105,22 +4208,41 @@
         </section>
       `;
 
-      // Layer 4: Collapsible Credits (Google One AI + Prompt / Flow)
+      // Layer 4: Collapsible Credits (Google One AI + Pool Billing / Legacy Prompt & Flow)
       const c = data.credits || {};
       const rawUserCredits = Array.isArray(c.userCredits) ? c.userCredits : [];
-      const userPills = rawUserCredits.length
-        ? rawUserCredits
+      const normalizedUserCredits = rawUserCredits.map(normalizeUserCreditItem);
+      const hasAnyUsableCredit = normalizedUserCredits.some((uc) => uc.usable);
+      const isPoolBilledUi =
+        c.billingModel === 'pool-and-overage'
+        || rawUserCredits.some((uc) => String(uc?.creditType || '').toUpperCase() === 'GOOGLE_ONE_AI')
+        || /^g1-|^free-tier$/i.test(String(u.tierId || ''))
+        || pools.some((p) => p && p.hasData);
+
+      const userPills = normalizedUserCredits.length
+        ? normalizedUserCredits
             .map((uc) => {
-              const label = formatCreditType(uc.creditType);
-              const detail = uc.creditAmount !== null && uc.creditAmount !== undefined
-                ? formatCreditNum(uc.creditAmount)
-                : uc.minimumCreditAmountForUsage !== null && uc.minimumCreditAmountForUsage !== undefined
-                  ? `${t('minUsage')}: ${uc.minimumCreditAmountForUsage}`
-                  : t('standardRule');
-              return `<span class="credit-pill">${esc(label)} · <strong>${esc(detail)}</strong></span>`;
+              const pillCls = uc.usable ? 'credit-pill is-usable' : 'credit-pill is-empty';
+              const valStr = `${t('creditBalance')} ${formatCreditNum(uc.availableAmount)}`;
+              let metaText = '';
+              if (uc.minUsageAmount !== null) {
+                if (uc.availableAmount === 0) {
+                  metaText = t('minUsageShort').replace('{n}', formatCreditNum(uc.minUsageAmount));
+                } else if (uc.usable) {
+                  metaText = `${t('minUsageShort').replace('{n}', formatCreditNum(uc.minUsageAmount))} · ${t('overageReady')}`;
+                } else {
+                  metaText = t('belowMinUsage').replace('{n}', formatCreditNum(uc.minUsageAmount));
+                }
+              } else if (uc.usable) {
+                metaText = t('overageReady');
+              }
+              const tipAttr = uc.availableAmount === 0 && uc.isOmittedAmount
+                ? ` title="${esc(t('creditsZeroTip'))}"`
+                : '';
+              return `<span class="${pillCls}"${tipAttr}>${esc(uc.creditType)} · <strong>${esc(valStr)}</strong>${metaText ? `<span class="credit-pill-meta">(${esc(metaText)})</span>` : ''}</span>`;
             })
             .join('')
-        : `<span class="credit-pill">Google One AI · <strong>${esc(tier || t('standardRule'))}</strong></span>`;
+        : `<span class="credit-pill is-empty">Google One AI · <strong>${esc(tier || t('standardRule'))}</strong></span>`;
 
       const creditBarRow = (label, item, color) => {
         if (item && Number.isFinite(Number(item.monthly)) && Number(item.monthly) > 0) {
@@ -4150,6 +4272,15 @@
         `;
       };
 
+      const creditNoteText = normalizedUserCredits.length === 0
+        ? t('creditsNoteNoList')
+        : hasAnyUsableCredit
+          ? t('creditsNoteReady')
+          : t('creditsNoteEmpty');
+      const creditBodyExtra = !isPoolBilledUi && (c.prompt || c.flow)
+        ? `${creditBarRow(t('promptCredits'), c.prompt, '#40C4FF')}${creditBarRow(t('flowCredits'), c.flow, '#B388FF')}`
+        : `<div class="credit-note">${esc(creditNoteText)}</div>`;
+
       const creditsCollapsed = state.collapsed.credits;
       const creditsHtml = `
         <section id="agy-qp-credits" class="qp-card section-card">
@@ -4159,8 +4290,7 @@
           </div>
           <div class="section-body ${creditsCollapsed ? 'qp-hidden' : ''}">
             <div class="credit-pill-list">${userPills}</div>
-            ${creditBarRow(t('promptCredits'), c.prompt, '#40C4FF')}
-            ${creditBarRow(t('flowCredits'), c.flow, '#B388FF')}
+            ${creditBodyExtra}
           </div>
         </section>
       `;

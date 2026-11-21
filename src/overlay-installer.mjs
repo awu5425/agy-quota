@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import {
   closeSync,
@@ -1834,6 +1834,7 @@ function parseInstallerArgs(argv) {
   let migrateCapsule = false;
   let json = false;
   let quiet = false;
+  let cdpPort = 9222;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -1841,6 +1842,12 @@ function parseInstallerArgs(argv) {
       mode = 'install';
     } else if (arg === '--ensure') {
       mode = 'ensure';
+    } else if (arg === '--launch') {
+      mode = 'launch';
+    } else if (arg === '--relaunch' || arg === '--restart-host') {
+      mode = 'relaunch';
+    } else if (arg === '--shortcut') {
+      mode = 'shortcut';
     } else if (arg === '--overlay-status') {
       mode = 'status';
     } else if (arg === '--uninstall-overlay') {
@@ -1853,6 +1860,13 @@ function parseInstallerArgs(argv) {
       json = true;
     } else if (arg === '--quiet' || arg === '-q') {
       quiet = true;
+    } else if (arg === '--cdp-port' && argv[i + 1]) {
+      const p = Number(argv[i + 1]);
+      if (Number.isFinite(p) && p >= 0 && p <= 65535) cdpPort = Math.floor(p);
+      i += 1;
+    } else if (arg.startsWith('--cdp-port=')) {
+      const p = Number(arg.slice('--cdp-port='.length));
+      if (Number.isFinite(p) && p >= 0 && p <= 65535) cdpPort = Math.floor(p);
     } else if (arg === '--asar' && argv[i + 1]) {
       asarPath = argv[i + 1];
       i += 1;
@@ -1866,6 +1880,10 @@ Options:
                                  (Auto-adapts to Context Meter companion mode or standalone top-right HUD;
                                   leaves other third-party tools untouched by default)
   --ensure                       Verify ASAR hooks (and companion Context Meter) and self-heal if wiped
+  --launch                       Self-heal ASAR if needed, then start Antigravity with CDP hot-mount enabled
+  --relaunch, --restart-host     Close Antigravity, self-heal ASAR/plugins, and relaunch with CDP enabled
+  --shortcut                     Create Desktop quick-launch & heal-restart shortcuts (Windows)
+  --cdp-port <port>              Remote debugging port for --launch/--relaunch (default: 9222, 0 to disable)
   --keep-sidecar                 Preserve/enable the native right auxiliary sidecar alongside top-right HUD
   --migrate-capsule              Explicitly opt in to backing up & retiring legacy context-capsule (restored on uninstall)
   --overlay-status               Inspect ASAR hook, overlay runtime, backup & sidecar status
@@ -1878,7 +1896,169 @@ Options:
     }
   }
 
-  return { mode, asarPath, keepSidecar, migrateCapsule, json, quiet };
+  return { mode, asarPath, keepSidecar, migrateCapsule, json, quiet, cdpPort };
+}
+
+export function discoverAntigravityExecutable(explicitAsarPath = null) {
+  const asarPath = discoverAsarPath(explicitAsarPath);
+  const appRoot = dirname(dirname(asarPath));
+  if (process.platform === 'win32') {
+    const exe = join(appRoot, 'Antigravity.exe');
+    if (existsSync(exe)) return exe;
+  } else if (process.platform === 'darwin') {
+    const macExe = resolve(dirname(asarPath), '..', 'MacOS', 'Electron');
+    if (existsSync(macExe)) return macExe;
+    const agyExe = resolve(dirname(asarPath), '..', 'MacOS', 'Antigravity');
+    if (existsSync(agyExe)) return agyExe;
+  } else {
+    const linExe = join(appRoot, 'antigravity');
+    if (existsSync(linExe)) return linExe;
+  }
+  throw new Error(`Unable to locate Antigravity executable near ${asarPath}`);
+}
+
+async function closeRunningAntigravityWindows() {
+  if (process.platform === 'win32') {
+    spawnSync('taskkill.exe', ['/IM', 'Antigravity.exe', '/T'], {
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    const deadline = Date.now() + 4500;
+    while (Date.now() < deadline) {
+      const probe = spawnSync(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-Command', "(Get-Process -Name 'Antigravity' -ErrorAction SilentlyContinue | Measure-Object).Count"],
+        { encoding: 'utf8', windowsHide: true },
+      );
+      if (Number(String(probe.stdout || '').trim()) === 0) {
+        return true;
+      }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    spawnSync('taskkill.exe', ['/IM', 'Antigravity.exe', '/T', '/F'], {
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    await new Promise((r) => setTimeout(r, 400));
+    return true;
+  }
+  spawnSync('pkill', ['-x', 'Antigravity'], { stdio: 'ignore' });
+  await new Promise((r) => setTimeout(r, 800));
+  return true;
+}
+
+export async function launchAntigravityWithPlugins(options = {}) {
+  const relaunch = Boolean(options.relaunch);
+  const cdpPort = Number.isFinite(Number(options.cdpPort)) ? Number(options.cdpPort) : 9222;
+  const exePath = discoverAntigravityExecutable(options.asarPath);
+
+  if (relaunch) {
+    await closeRunningAntigravityWindows();
+  }
+
+  let healed = false;
+  let ensureError = null;
+  try {
+    const status = getOverlayStatus(options);
+    const stateDir = resolveContextMeterStateDir();
+    const companionMissing =
+      !options.asarPath && isCompanionExpected(stateDir) && !status.hasMeterManifest;
+    if (!status.ok || companionMissing) {
+      await installMeterOverlay({ ...options, skipCdp: true });
+      healed = true;
+    }
+  } catch (err) {
+    ensureError = err instanceof Error ? err.message : String(err);
+  }
+
+  const launchArgs = [];
+  if (cdpPort > 0) {
+    launchArgs.push(`--remote-debugging-port=${cdpPort}`);
+  }
+  const child = spawn(exePath, launchArgs, {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: false,
+  });
+  child.unref();
+
+  return {
+    ok: true,
+    relaunch,
+    healed,
+    ensureError,
+    exePath,
+    cdpPort: cdpPort > 0 ? cdpPort : null,
+    pid: child.pid || null,
+  };
+}
+
+export function createWindowsLauncherShortcuts(options = {}) {
+  if (process.platform !== 'win32') {
+    throw new Error('--shortcut is currently supported on Windows only');
+  }
+  const sharedDataDir = options.sharedDataDir
+    ? resolve(String(options.sharedDataDir))
+    : resolveSharedQuotaDir();
+  mkdirSync(sharedDataDir, { recursive: true });
+
+  const cliEntry = join(REPO_ROOT, 'cli.mjs');
+  const exePath = discoverAntigravityExecutable(options.asarPath);
+  const desktopDir = options.desktopDir
+    ? resolve(String(options.desktopDir))
+    : join(homedir(), 'Desktop');
+  mkdirSync(desktopDir, { recursive: true });
+
+  const writeSilentVbs = (vbsPath, cliFlag) => {
+    const cmd = `"${process.execPath}" "${cliEntry}" ${cliFlag} --quiet`;
+    const escaped = cmd.replace(/"/g, '""');
+    const vbs = [
+      'Set sh = CreateObject("WScript.Shell")',
+      `sh.Run "${escaped}", 0, False`,
+      '',
+    ].join('\r\n');
+    writeFileSync(vbsPath, vbs, 'utf8');
+  };
+
+  const launchVbs = join(sharedDataDir, 'launch-antigravity.vbs');
+  const relaunchVbs = join(sharedDataDir, 'relaunch-antigravity.vbs');
+  writeSilentVbs(launchVbs, '--launch');
+  writeSilentVbs(relaunchVbs, '--relaunch');
+
+  const launchLnk = join(desktopDir, 'Antigravity (固定插件).lnk');
+  const relaunchLnk = join(desktopDir, '修复并重启 Antigravity.lnk');
+
+  const createLnk = (lnkPath, vbsPath, desc) => {
+    const ps = [
+      '$ws = New-Object -ComObject WScript.Shell',
+      `$sc = $ws.CreateShortcut('${lnkPath.replace(/'/g, "''")}')`,
+      "$sc.TargetPath = 'wscript.exe'",
+      `$sc.Arguments = '"${vbsPath}"'`,
+      `$sc.WorkingDirectory = '${dirname(exePath).replace(/'/g, "''")}'`,
+      `$sc.IconLocation = '${exePath.replace(/'/g, "''")},0'`,
+      `$sc.Description = '${desc.replace(/'/g, "''")}'`,
+      '$sc.Save()',
+    ].join('; ');
+    const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], {
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    if (r.status !== 0) {
+      throw new Error(r.stderr || `Failed to create shortcut ${lnkPath}`);
+    }
+  };
+
+  createLnk(launchLnk, launchVbs, '自愈补丁后启动 Antigravity（开启免重启热挂载端口）');
+  createLnk(relaunchLnk, relaunchVbs, '关闭、重打上下文与额度插件补丁并重启 Antigravity');
+
+  return {
+    ok: true,
+    exePath,
+    launchShortcut: launchLnk,
+    relaunchShortcut: relaunchLnk,
+    launchVbs,
+    relaunchVbs,
+  };
 }
 
 function printInstallReport(res) {
@@ -2004,7 +2184,34 @@ async function runCli() {
         }
         return;
       }
-      const res = await installMeterOverlay(opts);
+      if (opts.mode === 'launch' || opts.mode === 'relaunch') {
+    const res = await launchAntigravityWithPlugins({ ...opts, relaunch: opts.mode === 'relaunch' });
+    if (opts.json) {
+      console.log(JSON.stringify(res, null, 2));
+    } else if (!opts.quiet) {
+      console.log(
+        `[agy-quota] ${res.relaunch ? 'Relaunched' : 'Launched'} Antigravity (pid=${res.pid ?? 'unknown'}, healed=${res.healed}, cdp=${res.cdpPort ?? 'off'})`,
+      );
+      if (res.ensureError) {
+        console.log(`  warning: ensure reported: ${res.ensureError}`);
+      }
+    }
+    return;
+  }
+
+  if (opts.mode === 'shortcut') {
+    const res = createWindowsLauncherShortcuts(opts);
+    if (opts.json) {
+      console.log(JSON.stringify(res, null, 2));
+    } else if (!opts.quiet) {
+      console.log('[agy-quota] Created Desktop quick-launch shortcuts:');
+      console.log(`  launch   : ${res.launchShortcut}`);
+      console.log(`  relaunch : ${res.relaunchShortcut}`);
+    }
+    return;
+  }
+
+  const res = await installMeterOverlay(opts);
       if (opts.json) {
         console.log(JSON.stringify({ ok: true, healed: true, result: res }, null, 2));
       } else if (!opts.quiet) {
@@ -2014,6 +2221,33 @@ async function runCli() {
       if (existsSync(lockPath)) {
         rmSync(lockPath, { force: true });
       }
+    }
+    return;
+  }
+
+  if (opts.mode === 'launch' || opts.mode === 'relaunch') {
+    const res = await launchAntigravityWithPlugins({ ...opts, relaunch: opts.mode === 'relaunch' });
+    if (opts.json) {
+      console.log(JSON.stringify(res, null, 2));
+    } else if (!opts.quiet) {
+      console.log(
+        `[agy-quota] ${res.relaunch ? 'Relaunched' : 'Launched'} Antigravity (pid=${res.pid ?? 'unknown'}, healed=${res.healed}, cdp=${res.cdpPort ?? 'off'})`,
+      );
+      if (res.ensureError) {
+        console.log(`  warning: ensure reported: ${res.ensureError}`);
+      }
+    }
+    return;
+  }
+
+  if (opts.mode === 'shortcut') {
+    const res = createWindowsLauncherShortcuts(opts);
+    if (opts.json) {
+      console.log(JSON.stringify(res, null, 2));
+    } else if (!opts.quiet) {
+      console.log('[agy-quota] Created Desktop quick-launch shortcuts:');
+      console.log(`  launch   : ${res.launchShortcut}`);
+      console.log(`  relaunch : ${res.relaunchShortcut}`);
     }
     return;
   }

@@ -73,6 +73,14 @@
       flowCredits: 'Flow 积分',
       includedPlan: '按套餐池计费',
       standardRule: '订阅规则生效',
+      creditBalance: '余额',
+      minUsageShort: '起扣 ≥ {n}',
+      belowMinUsage: '低于起扣 {n}',
+      overageReady: '超额可用',
+      creditsNoteEmpty: '当前无可用超额积分 · 默认按上方 5h / 周配额池计费',
+      creditsNoteReady: '优先消耗上方 5h / 周配额池，耗尽后自动扣减超额积分',
+      creditsNoteNoList: '默认按上方 5h / 周配额池计费（未检测到可用超额积分）',
+      creditsZeroTip: '后端未返回 creditAmount（Protobuf 省略 0 值），表示当前可用超额积分为 0；仅在余额 ≥ 起扣门槛且基础池耗尽时触发超额扣减',
       ready: '已就绪',
       stable: '平稳',
       rateUnit: 'pp/h',
@@ -122,6 +130,14 @@
       flowCredits: 'Flow Credits',
       includedPlan: 'Included in plan',
       standardRule: 'Active plan rules',
+      creditBalance: 'Balance',
+      minUsageShort: 'Min ≥ {n}',
+      belowMinUsage: 'Below min {n}',
+      overageReady: 'Overage ready',
+      creditsNoteEmpty: 'No usable overage credits · Billed from 5h / weekly pools above',
+      creditsNoteReady: 'Uses 5h / weekly pools above first; overage credits apply after exhaustion',
+      creditsNoteNoList: 'Billed from 5h / weekly pools above (no overage credits reported)',
+      creditsZeroTip: 'Server omitted creditAmount (Protobuf zero default), meaning 0 usable overage credits; overages apply only once balance ≥ minimum and baseline quota is exhausted',
       ready: 'Ready',
       stable: 'Stable',
       rateUnit: 'pp/h',
@@ -1441,6 +1457,40 @@
       .join(' ');
   }
 
+  function normalizeUserCreditItem(uc) {
+    const creditType = formatCreditType(uc?.creditType);
+    const rawAmount = uc?.creditAmount !== null && uc?.creditAmount !== undefined && String(uc.creditAmount).trim() !== ''
+      ? String(uc.creditAmount).trim()
+      : null;
+    const explicitAvail = toFinite(uc?.availableAmount);
+    const parsedRawAvail = rawAmount !== null ? toFinite(rawAmount) : null;
+    const availableAmount = explicitAvail !== null
+      ? Math.max(0, explicitAvail)
+      : (parsedRawAvail !== null ? Math.max(0, parsedRawAvail) : 0);
+
+    const rawMin = uc?.minimumCreditAmountForUsage !== null && uc?.minimumCreditAmountForUsage !== undefined && String(uc.minimumCreditAmountForUsage).trim() !== ''
+      ? String(uc.minimumCreditAmountForUsage).trim()
+      : null;
+    const explicitMin = toFinite(uc?.minUsageAmount);
+    const parsedRawMin = rawMin !== null ? toFinite(rawMin) : null;
+    const minUsageAmount = explicitMin !== null
+      ? Math.max(0, explicitMin)
+      : (parsedRawMin !== null ? Math.max(0, parsedRawMin) : null);
+
+    const isOmittedAmount = typeof uc?.isOmittedAmount === 'boolean' ? uc.isOmittedAmount : rawAmount === null;
+    const usable = typeof uc?.usable === 'boolean'
+      ? uc.usable
+      : (availableAmount > 0 && (minUsageAmount === null || availableAmount >= minUsageAmount));
+
+    return {
+      creditType,
+      availableAmount,
+      isOmittedAmount,
+      minUsageAmount,
+      usable,
+    };
+  }
+
   function renderCreditsSection(data) {
     const el = $('credits-section');
     el.classList.remove('hidden');
@@ -1449,20 +1499,38 @@
     const c = data.credits || {};
     const u = data.userInfo || {};
     const rawUserCredits = Array.isArray(c.userCredits) ? c.userCredits : [];
+    const normalizedUserCredits = rawUserCredits.map(normalizeUserCreditItem);
+    const hasAnyUsableCredit = normalizedUserCredits.some((uc) => uc.usable);
+    const isPoolBilledUi =
+      c.billingModel === 'pool-and-overage'
+      || rawUserCredits.some((uc) => String(uc?.creditType || '').toUpperCase() === 'GOOGLE_ONE_AI')
+      || /^g1-|^free-tier$/i.test(String(u.tierId || ''))
+      || (Array.isArray(data.pools) && data.pools.some((p) => p && p.hasData));
 
-    const userPills = rawUserCredits.length
-      ? rawUserCredits
+    const userPills = normalizedUserCredits.length
+      ? normalizedUserCredits
           .map((uc) => {
-            const label = formatCreditType(uc.creditType);
-            const detail = uc.creditAmount !== null && uc.creditAmount !== undefined
-              ? formatCreditNum(uc.creditAmount)
-              : uc.minimumCreditAmountForUsage !== null && uc.minimumCreditAmountForUsage !== undefined
-                ? `${t('minUsage')}: ${uc.minimumCreditAmountForUsage}`
-                : t('standardRule');
-            return `<span class="credit-pill">${esc(label)} · <strong>${esc(detail)}</strong></span>`;
+            const pillCls = uc.usable ? 'credit-pill is-usable' : 'credit-pill is-empty';
+            const valStr = `${t('creditBalance')} ${formatCreditNum(uc.availableAmount)}`;
+            let metaText = '';
+            if (uc.minUsageAmount !== null) {
+              if (uc.availableAmount === 0) {
+                metaText = t('minUsageShort').replace('{n}', formatCreditNum(uc.minUsageAmount));
+              } else if (uc.usable) {
+                metaText = `${t('minUsageShort').replace('{n}', formatCreditNum(uc.minUsageAmount))} · ${t('overageReady')}`;
+              } else {
+                metaText = t('belowMinUsage').replace('{n}', formatCreditNum(uc.minUsageAmount));
+              }
+            } else if (uc.usable) {
+              metaText = t('overageReady');
+            }
+            const tipAttr = uc.availableAmount === 0 && uc.isOmittedAmount
+              ? ` title="${esc(t('creditsZeroTip'))}"`
+              : '';
+            return `<span class="${pillCls}"${tipAttr}>${esc(uc.creditType)} · <strong>${esc(valStr)}</strong>${metaText ? `<span class="credit-pill-meta">(${esc(metaText)})</span>` : ''}</span>`;
           })
           .join('')
-      : `<span class="credit-pill">Google One AI · <strong>${esc(cleanTierValue(u.tier) || t('standardRule'))}</strong></span>`;
+      : `<span class="credit-pill is-empty">Google One AI · <strong>${esc(cleanTierValue(u.tier) || t('standardRule'))}</strong></span>`;
 
     const barRow = (label, item, color) => {
       if (item && Number.isFinite(Number(item.monthly)) && Number(item.monthly) > 0) {
@@ -1492,6 +1560,15 @@
       `;
     };
 
+    const creditNoteText = normalizedUserCredits.length === 0
+      ? t('creditsNoteNoList')
+      : hasAnyUsableCredit
+        ? t('creditsNoteReady')
+        : t('creditsNoteEmpty');
+    const creditBodyExtra = !isPoolBilledUi && (c.prompt || c.flow)
+      ? `${barRow(t('promptCredits'), c.prompt, '#40C4FF')}${barRow(t('flowCredits'), c.flow, '#B388FF')}`
+      : `<div class="credit-note">${esc(creditNoteText)}</div>`;
+
     el.innerHTML = `
       <div class="section-header">
         <h2 class="section-title">${esc(t('creditsTitle'))}</h2>
@@ -1499,8 +1576,7 @@
       </div>
       <div id="body-credits" class="section-body ${isCollapsed ? 'hidden' : ''}">
         <div class="credit-pill-list">${userPills}</div>
-        ${barRow(t('promptCredits'), c.prompt, '#40C4FF')}
-        ${barRow(t('flowCredits'), c.flow, '#B388FF')}
+        ${creditBodyExtra}
       </div>
     `;
     bindCollapse('credits', 'btn-col-credits', 'body-credits');

@@ -1392,3 +1392,193 @@ test('13. Gemini 4 Neon & Orchestrator (Neon) map to Gemini pool, attribute 90m 
   assert.equal(ctl.setActiveModelForTest('model_placeholder_m537'), 'gemini');
   ctl.dispose();
 });
+
+test('14. Pool-billed Google AI plans suppress legacy Exa Prompt/Flow stubs and report explicit Google One AI balances', () => {
+  const now = 1_795_100_000_000;
+  const reset5hIso = new Date(now + 2 * 3_600_000).toISOString();
+  const resetWeeklyIso = new Date(now + 4 * 86_400_000).toISOString();
+
+  const buildProStatus = (availableCredits) => ({
+    userStatus: {
+      name: 'Credit Tester',
+      email: 'credits@example.com',
+      userTier: {
+        id: 'g1-pro-tier',
+        name: 'Google AI Pro',
+        description: 'Google AI Pro',
+        availableCredits,
+      },
+      planStatus: {
+        planInfo: {
+          teamsTier: 'TEAMS_TIER_PRO',
+          planName: 'Pro',
+          monthlyPromptCredits: 50000,
+          monthlyFlowCredits: 150000,
+        },
+        availablePromptCredits: 500,
+        availableFlowCredits: 100,
+      },
+      cascadeModelConfigData: { clientModelConfigs: [] },
+    },
+  });
+
+  const proSummary = {
+    response: {
+      groups: [
+        {
+          displayName: 'Gemini Models',
+          buckets: [
+            { bucketId: 'gemini-5h', window: '5h', remainingFraction: 0.91, resetTime: reset5hIso },
+            { bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.61, resetTime: resetWeeklyIso },
+          ],
+        },
+      ],
+    },
+  };
+
+  // 14A. Omitted creditAmount (Protobuf 0 default) on g1-pro-tier -> suppress legacy 500/50K & 100/150K bars, report 0
+  const zeroSnap = quotaCore.parseSnapshot(
+    buildProStatus([{ creditType: 'GOOGLE_ONE_AI', minimumCreditAmountForUsage: '50' }]),
+    proSummary,
+    { now, source: 'test', readOnly: true, disablePricingLedger: true, disableModelCalls: true },
+  );
+  assert.equal(zeroSnap.credits.billingModel, 'pool-and-overage');
+  assert.equal(zeroSnap.credits.prompt, null);
+  assert.equal(zeroSnap.credits.flow, null);
+  assert.equal(zeroSnap.credits.legacyPrompt?.available, 500);
+  assert.equal(zeroSnap.credits.legacyFlow?.available, 100);
+  assert.equal(zeroSnap.credits.userCredits.length, 1);
+  assert.equal(zeroSnap.credits.userCredits[0].creditType, 'GOOGLE_ONE_AI');
+  assert.equal(zeroSnap.credits.userCredits[0].availableAmount, 0);
+  assert.equal(zeroSnap.credits.userCredits[0].isOmittedAmount, true);
+  assert.equal(zeroSnap.credits.userCredits[0].minUsageAmount, 50);
+  assert.equal(zeroSnap.credits.userCredits[0].usable, false);
+
+  const zeroCli = quotaCore.formatCliReport(zeroSnap, { useColor: false });
+  assert.equal(zeroCli.includes('500 / 50000'), false);
+  assert.equal(zeroCli.includes('100 / 150000'), false);
+  assert.match(zeroCli, /GOOGLE_ONE_AI\s+0 \(min 50 · billed from 5h\/weekly pools\)/);
+
+  // 14B. Usable Google One AI creditAmount (2500 >= 50)
+  const usableSnap = quotaCore.parseSnapshot(
+    buildProStatus([{ creditType: 'GOOGLE_ONE_AI', creditAmount: '2500', minimumCreditAmountForUsage: '50' }]),
+    proSummary,
+    { now, source: 'test', readOnly: true, disablePricingLedger: true, disableModelCalls: true },
+  );
+  assert.equal(usableSnap.credits.userCredits[0].availableAmount, 2500);
+  assert.equal(usableSnap.credits.userCredits[0].isOmittedAmount, false);
+  assert.equal(usableSnap.credits.userCredits[0].usable, true);
+
+  const usableCli = quotaCore.formatCliReport(usableSnap, { useColor: false });
+  assert.match(usableCli, /GOOGLE_ONE_AI\s+2,500 \(min 50 · overage ready\)/);
+
+  // 14C. Below-threshold creditAmount (30 < 50) -> usable === false
+  const belowMinSnap = quotaCore.parseSnapshot(
+    buildProStatus([{ creditType: 'GOOGLE_ONE_AI', creditAmount: '30', minimumCreditAmountForUsage: '50' }]),
+    proSummary,
+    { now, source: 'test', readOnly: true, disablePricingLedger: true, disableModelCalls: true },
+  );
+  assert.equal(belowMinSnap.credits.userCredits[0].availableAmount, 30);
+  assert.equal(belowMinSnap.credits.userCredits[0].usable, false);
+
+  // 14D. Non-Google-One legacy Exa plan preserves Prompt/Flow credit bars
+  const legacySnap = quotaCore.parseSnapshot(
+    {
+      userStatus: {
+        name: 'Legacy User',
+        email: 'legacy@example.com',
+        userTier: { id: 'custom-team-tier', name: 'Teams' },
+        planStatus: {
+          planInfo: {
+            planName: 'Teams',
+            monthlyPromptCredits: 500,
+            monthlyFlowCredits: 1000,
+          },
+          availablePromptCredits: 420,
+          availableFlowCredits: 900,
+        },
+        cascadeModelConfigData: { clientModelConfigs: [] },
+      },
+    },
+    { response: { groups: [] } },
+    { now, source: 'test', readOnly: true, disablePricingLedger: true, disableModelCalls: true },
+  );
+  assert.equal(legacySnap.credits.billingModel, 'legacy-exa');
+  assert.equal(legacySnap.credits.prompt?.available, 420);
+  assert.equal(legacySnap.credits.prompt?.remainingPercentage, 84);
+  assert.equal(legacySnap.credits.flow?.available, 900);
+
+  // 14E. Overlay direct LS parser (src/meter-overlay-ui.js) matches pool-and-overage behavior
+  const uiCode = readFileSync(join(REPO_ROOT, 'src', 'meter-overlay-ui.js'), 'utf8');
+  const noop = () => {};
+  const makeStubEl = () => ({
+    style: {},
+    classList: { toggle: noop, add: noop, remove: noop, contains: () => false },
+    setAttribute: noop,
+    getAttribute: () => '',
+    addEventListener: noop,
+    removeEventListener: noop,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+  });
+  const docEl = makeStubEl();
+  const bodyEl = makeStubEl();
+  const storage = new Map();
+  let nextTimerId = 1;
+  const uiCtx = vm.createContext({
+    document: {
+      documentElement: docEl,
+      body: bodyEl,
+      hidden: false,
+      readyState: 'complete',
+      getElementById: () => null,
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      addEventListener: noop,
+      removeEventListener: noop,
+    },
+    window: {
+      addEventListener: noop,
+      removeEventListener: noop,
+      matchMedia: () => ({ matches: true, addEventListener: noop, removeEventListener: noop }),
+    },
+    location: { origin: '', protocol: 'https:' },
+    navigator: { language: 'zh-CN' },
+    localStorage: {
+      getItem: (k) => (storage.has(k) ? storage.get(k) : null),
+      setItem: (k, v) => storage.set(k, String(v)),
+      removeItem: (k) => storage.delete(k),
+    },
+    MutationObserver: class {
+      observe() {}
+      disconnect() {}
+    },
+    fetch: () => Promise.resolve({ ok: false, status: 404, json: async () => ({}) }),
+    queueMicrotask,
+    setTimeout: () => nextTimerId++,
+    clearTimeout: noop,
+    setInterval: () => nextTimerId++,
+    clearInterval: noop,
+    URL,
+    Promise,
+  });
+  uiCtx.globalThis = uiCtx;
+  uiCtx.window.top = uiCtx.window;
+
+  vm.runInContext(uiCode, uiCtx, { filename: 'src/meter-overlay-ui.js' });
+  const ctl = uiCtx.__AGY_QUOTA_OVERLAY_CTL__;
+  try {
+    const overlayZeroSnap = ctl.parseDirectLsSnapshotForTest(
+      buildProStatus([{ creditType: 'GOOGLE_ONE_AI', minimumCreditAmountForUsage: '50' }]),
+      proSummary,
+      {},
+    );
+    assert.equal(overlayZeroSnap.credits.billingModel, 'pool-and-overage');
+    assert.equal(overlayZeroSnap.credits.prompt, null);
+    assert.equal(overlayZeroSnap.credits.flow, null);
+    assert.equal(overlayZeroSnap.credits.userCredits[0].availableAmount, 0);
+    assert.equal(overlayZeroSnap.credits.userCredits[0].usable, false);
+  } finally {
+    ctl.dispose();
+  }
+});

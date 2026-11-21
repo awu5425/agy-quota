@@ -46,7 +46,7 @@ When the user runs `/agy-quota` with no arguments or asks how much quota remains
    - **Account & Mode**: `userInfo.tier` (e.g. `Google AI Ultra` / `Google AI Pro`), masked `userInfo.email`, and `poolMode` (`2-pool` on Ultra where Neon/Carbon/Argon/Hydrogen/Flash share `Gemini`, vs `3-pool` on Pro where `Argon` has an independent weekly bucket).
    - **Quota Pools (`pools[]`)**: `5h` remaining `%` & `resetTime`, `weekly.remaining` `%` & `weekly.resetTime`, burn rate `prediction.usageRate` (`pp/h`, computed over actual observed elapsed span) & `prediction.runway`, and `familySummary`.
    - **90m Per-Model Burn (`history.modelSummaries[]`)**: Which base models (`Neon`, `Carbon`, `Argon`, `Hydrogen`, `3.8 Flash`, `Opus`, `Sonnet`, `GPT-OSS`) actively consumed quota (`totalPp`, `usageRatePp`, `calls`).
-   - **Credits (`credits`)**: `prompt`, `flow`, and `userCredits` (`Google One AI`).
+   - **Credits (`credits`)**: `billingModel` (`pool-and-overage` on standard Google AI / free plans suppresses legacy Exa `prompt`/`flow` placeholders) and `userCredits` (`Google One AI` `availableAmount`, `minUsageAmount`, `usable` — treating omitted Protobuf `creditAmount` as `0`).
    - **Budget Tip**: If any pool is below `30%` and its runway is shorter than `resetTime`, suggest switching heavy subtasks to a healthier pool (e.g. `Claude / GPT`) or lighter family (`3.8 Flash`) until reset.
 
 For a quick terminal table including deduplicated base models (`/agy-quota models`), run:

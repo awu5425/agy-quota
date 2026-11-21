@@ -2249,13 +2249,13 @@ function parseSnapshot(userStatusData, summaryData, connInfo = {}) {
     upgradeText: userTier.upgradeSubscriptionText || '',
   };
 
-  // Credits
-  let promptCredits = null;
+  // Credits (separate legacy Exa prompt/flow fields from pool + Google One AI overage plans)
+  let rawPromptCredits = null;
   const monthlyPrompt = toFiniteNumber(planInfo.monthlyPromptCredits);
   const availPrompt = planStatus ? toFiniteNumber(planStatus.availablePromptCredits ?? 0) : null;
   if (monthlyPrompt !== null && monthlyPrompt > 0 && availPrompt !== null) {
     const avail = Math.max(0, availPrompt);
-    promptCredits = {
+    rawPromptCredits = {
       available: avail,
       monthly: monthlyPrompt,
       remainingPercentage: clamp((avail / monthlyPrompt) * 100, 0, 100),
@@ -2263,12 +2263,12 @@ function parseSnapshot(userStatusData, summaryData, connInfo = {}) {
     };
   }
 
-  let flowCredits = null;
+  let rawFlowCredits = null;
   const monthlyFlow = toFiniteNumber(planInfo.monthlyFlowCredits);
   const availFlow = planStatus && monthlyFlow !== null ? toFiniteNumber(planStatus.availableFlowCredits ?? 0) : null;
   if (monthlyFlow !== null && monthlyFlow > 0 && availFlow !== null) {
     const avail = Math.max(0, availFlow);
-    flowCredits = {
+    rawFlowCredits = {
       available: avail,
       monthly: monthlyFlow,
       remainingPercentage: clamp((avail / monthlyFlow) * 100, 0, 100),
@@ -2276,13 +2276,29 @@ function parseSnapshot(userStatusData, summaryData, connInfo = {}) {
     };
   }
 
-  const userCredits = (userTier.availableCredits || []).map((c) => ({
-    creditType: typeof c.creditType === 'string' && c.creditType.trim() ? c.creditType : 'UNKNOWN',
-    creditAmount: c.creditAmount !== undefined && c.creditAmount !== null ? String(c.creditAmount) : null,
-    minimumCreditAmountForUsage: c.minimumCreditAmountForUsage !== undefined && c.minimumCreditAmountForUsage !== null
-      ? String(c.minimumCreditAmountForUsage)
-      : null,
-  }));
+  const userCredits = (userTier.availableCredits || []).map((c) => {
+    const creditType = typeof c.creditType === 'string' && c.creditType.trim() ? c.creditType.trim() : 'GOOGLE_ONE_AI';
+    const rawAmount = c.creditAmount !== undefined && c.creditAmount !== null && String(c.creditAmount).trim() !== ''
+      ? String(c.creditAmount).trim()
+      : null;
+    const parsedAmount = rawAmount !== null ? toFiniteNumber(rawAmount) : null;
+    // Protobuf3 omits default 0 values for creditAmount; treat omitted creditAmount as 0.
+    const availableAmount = parsedAmount !== null ? Math.max(0, parsedAmount) : 0;
+    const rawMin = c.minimumCreditAmountForUsage !== undefined && c.minimumCreditAmountForUsage !== null && String(c.minimumCreditAmountForUsage).trim() !== ''
+      ? String(c.minimumCreditAmountForUsage).trim()
+      : null;
+    const parsedMin = rawMin !== null ? toFiniteNumber(rawMin) : null;
+    const minUsageAmount = parsedMin !== null ? Math.max(0, parsedMin) : null;
+    return {
+      creditType,
+      creditAmount: rawAmount,
+      availableAmount,
+      isOmittedAmount: rawAmount === null,
+      minimumCreditAmountForUsage: rawMin,
+      minUsageAmount,
+      usable: availableAmount > 0 && (minUsageAmount === null || availableAmount >= minUsageAmount),
+    };
+  });
 
   // Deduplicated base models
   const rawModels = userStatus.cascadeModelConfigData?.clientModelConfigs || [];
@@ -2325,6 +2341,18 @@ function parseSnapshot(userStatusData, summaryData, connInfo = {}) {
       buckets,
     });
   }
+
+  const tierIdLower = String(userTier.id || '').trim().toLowerCase();
+  const hasGoogleOneCredits = userCredits.some(
+    (uc) => String(uc.creditType || '').toUpperCase() === 'GOOGLE_ONE_AI',
+  );
+  const isPoolBilledPlan = hasGoogleOneCredits
+    || tierIdLower.startsWith('g1-')
+    || tierIdLower === 'free-tier'
+    || summaryBucketsById.size > 0;
+  const billingModel = isPoolBilledPlan ? 'pool-and-overage' : 'legacy-exa';
+  const promptCredits = isPoolBilledPlan ? null : rawPromptCredits;
+  const flowCredits = isPoolBilledPlan ? null : rawFlowCredits;
 
   // Detect whether Argon has an independent server-side quota pool (Pro = 3-pool, Ultra = 2-pool)
   const hasIndependentArgonPool = detectIndependentArgonPool({
@@ -2503,8 +2531,12 @@ function parseSnapshot(userStatusData, summaryData, connInfo = {}) {
     },
     userInfo,
     credits: {
+      billingModel,
       prompt: promptCredits,
       flow: flowCredits,
+      ...(isPoolBilledPlan && (rawPromptCredits || rawFlowCredits)
+        ? { legacyPrompt: rawPromptCredits, legacyFlow: rawFlowCredits }
+        : {}),
       userCredits,
     },
     pools,
@@ -2832,6 +2864,7 @@ function buildUserStatusFromOAuth(email, name, loadCodeAssistData, availableMode
         id: tierId,
         name: tier,
         description: cleanTierLabel(tierObj?.description || ''),
+        availableCredits: Array.isArray(tierObj?.availableCredits) ? tierObj.availableCredits : [],
       },
       planStatus: {
         planInfo: {
@@ -3189,10 +3222,21 @@ function formatCliReport(snap, options = {}) {
     }
     if (hasUserCredits) {
       for (const uc of credits.userCredits) {
-        const val = uc.creditAmount != null
-          ? `${uc.creditAmount}`
-          : (uc.minimumCreditAmountForUsage != null ? `min ${uc.minimumCreditAmountForUsage}` : '-');
-        lines.push(`  ${String(uc.creditType || 'Credit').padEnd(14)} ${c.dim(val)}`);
+        const avail = Number.isFinite(Number(uc.availableAmount))
+          ? Math.max(0, Number(uc.availableAmount))
+          : (uc.creditAmount != null ? Math.max(0, Number(uc.creditAmount) || 0) : 0);
+        const minU = Number.isFinite(Number(uc.minUsageAmount))
+          ? Number(uc.minUsageAmount)
+          : (uc.minimumCreditAmountForUsage != null ? Number(uc.minimumCreditAmountForUsage) : null);
+        let detail;
+        if (avail > 0 && (minU === null || avail >= minU)) {
+          detail = `${avail.toLocaleString()} (${minU != null ? `min ${minU} · ` : ''}overage ready)`;
+        } else if (avail > 0) {
+          detail = `${avail.toLocaleString()} (below min ${minU})`;
+        } else {
+          detail = `0 (${minU != null ? `min ${minU} · ` : ''}billed from 5h/weekly pools)`;
+        }
+        lines.push(`  ${String(uc.creditType || 'Credit').padEnd(14)} ${c.dim(detail)}`);
       }
     }
     lines.push('');

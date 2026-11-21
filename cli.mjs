@@ -44,6 +44,9 @@ Usage:
   agy-quota --top-right --keep-sidecar   Install top-right HUD while ALSO keeping the native right sidecar
   agy-quota --top-right --migrate-capsule Opt in to backing up & retiring legacy context-capsule (restored on uninstall)
   agy-quota --ensure [--quiet]           Verify ASAR hooks (and companion Context Meter) and self-heal if wiped
+  agy-quota --launch [--cdp-port <n>]    Self-heal ASAR if wiped, then launch Antigravity with CDP hot-mount
+  agy-quota --relaunch                   Close Antigravity, self-heal plugins, and restart cleanly
+  agy-quota --shortcut                   Create Desktop quick-launch & heal-restart shortcuts (Windows)
   agy-quota --overlay-status [--json]    Inspect ASAR hook, runtime bundle, backup & sidecar status
   agy-quota --uninstall-overlay          Remove ASAR preload hook & top-right overlay cleanly
 
@@ -100,6 +103,10 @@ async function run() {
     args.includes('--top-right') ||
     args.includes('--meter-overlay') ||
     args.includes('--ensure') ||
+    args.includes('--launch') ||
+    args.includes('--relaunch') ||
+    args.includes('--restart-host') ||
+    args.includes('--shortcut') ||
     args.includes('--overlay-status') ||
     args.includes('--uninstall-overlay')
   ) {
