@@ -3832,6 +3832,7 @@
   let standaloneHost = null;
   let standaloneCheckTimer = null;
   let innerObserver = null;
+  let badgeObserver = null;
   let isMutatingInternal = false;
   let boundRefreshBtn = null;
   let boundBadgeBtn = null;
@@ -4300,47 +4301,63 @@
         : '';
 
       root.innerHTML = `${errInline}${userHtml}${gaugesHtml}${trendHtml}${creditsHtml}${footerHtml}`;
-
-      if (currentMode === 'companion' && mountedShadow && !state.error && pools.length > 0) {
-        const hostBanner = mountedShadow.getElementById('quota-banner');
-        if (hostBanner) {
-          hostBanner.style.display = 'none';
-        }
-        const hostBadge = mountedShadow.getElementById('badge-quota');
-        const qStateAttr = hostBadge ? String(hostBadge.getAttribute('data-quota-state') || '') : '';
-        if (
-          hostBadge &&
-          (qStateAttr === 'stale' ||
-            qStateAttr === 'error' ||
-            /失败|过期|failed|error|stale/i.test(hostBadge.textContent || ''))
-        ) {
-          const primaryPool =
-            pools.find((p) => p.id === activePoolId && p.hasData) ||
-            pools.find((p) => p.hasData) ||
-            pools[0];
-          if (primaryPool && Number.isFinite(Number(primaryPool.remaining))) {
-            const pctRound = Math.round(clamp(Number(primaryPool.remaining), 0, 100));
-            const valEl = mountedShadow.getElementById('quota-badge-val');
-            const tagEl = mountedShadow.getElementById('quota-badge-tag');
-            const ringFill = mountedShadow.getElementById('quota-ring-fill');
-            if (valEl) valEl.textContent = `${pctRound}%`;
-            if (tagEl) {
-              const cd = primaryPool.resetDate
-                ? formatCountdown(primaryPool.resetDate - Date.now(), primaryPool.resetTime || '5h')
-                : (primaryPool.resetTime || '5h');
-              tagEl.textContent = cd && cd !== 'N/A' ? cd : '5h';
-            }
-            if (ringFill) {
-              const circ = 2 * Math.PI * 6.5;
-              ringFill.setAttribute('stroke-dashoffset', (circ * (1 - pctRound / 100)).toFixed(2));
-            }
-            hostBadge.setAttribute('data-quota-state', 'ok');
-            hostBadge.classList.remove('error', 'is-error', 'failed', 'stale', 'is-stale');
-          }
-        }
-      }
+      healHostBadgeIfNeeded(mountedShadow, state.data, pools, activePoolId);
     } finally {
       isMutatingInternal = false;
+    }
+  }
+
+  function healHostBadgeIfNeeded(shadowRoot, data = state.data, prePools = null, preActivePoolId = null) {
+    if (currentMode !== 'companion' || !shadowRoot || !data || !Array.isArray(data.pools) || data.pools.length === 0) {
+      return;
+    }
+    const prevMutating = isMutatingInternal;
+    isMutatingInternal = true;
+    try {
+      const hostBanner = shadowRoot.getElementById('quota-banner');
+      if (hostBanner) {
+        hostBanner.style.display = 'none';
+      }
+      const hostBadge = shadowRoot.getElementById('badge-quota');
+      if (!hostBadge) return;
+      const qStateAttr = String(hostBadge.getAttribute('data-quota-state') || '').toLowerCase();
+      const badgeText = String(hostBadge.textContent || '');
+      const isBroken =
+        qStateAttr === 'stale' ||
+        qStateAttr === 'error' ||
+        qStateAttr === 'unavailable' ||
+        /失败|过期|重试|未知|failed|error|stale|retry/i.test(badgeText);
+      if (!isBroken) return;
+
+      const pools = Array.isArray(prePools) ? prePools : normalizePools(data.pools, data);
+      const activePoolId = preActivePoolId ?? detectActivePoolId(shadowRoot, data, pools);
+      const primaryPool =
+        pools.find((p) => p.id === activePoolId && p.hasData) ||
+        pools.find((p) => p.hasData) ||
+        pools[0];
+      if (!primaryPool || !Number.isFinite(Number(primaryPool.remaining))) return;
+
+      const pctRound = Math.round(clamp(Number(primaryPool.remaining), 0, 100));
+      const valEl = shadowRoot.getElementById('quota-badge-val');
+      const tagEl = shadowRoot.getElementById('quota-badge-tag');
+      const ringFill = shadowRoot.getElementById('quota-ring-fill');
+      const cd = primaryPool.resetDate
+        ? formatCountdown(primaryPool.resetDate - Date.now(), primaryPool.resetTime || '5h')
+        : (primaryPool.resetTime || '5h');
+      const safeCd = cd && cd !== 'N/A' ? cd : '5h';
+
+      if (valEl) valEl.textContent = `${pctRound}%`;
+      if (tagEl) tagEl.textContent = safeCd;
+      if (ringFill) {
+        const circ = 2 * Math.PI * 6.5;
+        ringFill.setAttribute('stroke-dasharray', `${circ.toFixed(2)} ${circ.toFixed(2)}`);
+        ringFill.setAttribute('stroke-dashoffset', (circ * (1 - pctRound / 100)).toFixed(2));
+      }
+      hostBadge.setAttribute('data-quota-state', 'ok');
+      hostBadge.classList.remove('error', 'is-error', 'failed', 'stale', 'is-stale');
+      hostBadge.title = `${primaryPool.label || 'Quota'} · ${pctRound}% · ${t('resetAt')}: ${safeCd}`;
+    } finally {
+      isMutatingInternal = prevMutating;
     }
   }
 
@@ -4576,6 +4593,10 @@
       innerObserver.disconnect();
       innerObserver = null;
     }
+    if (badgeObserver) {
+      badgeObserver.disconnect();
+      badgeObserver = null;
+    }
   }
 
   function cancelStandaloneTimer() {
@@ -4769,6 +4790,18 @@
         if (boundBadgeBtn) boundBadgeBtn.removeEventListener('click', onHostBadgeClick);
         boundBadgeBtn = badgeBtn;
         boundBadgeBtn.addEventListener('click', onHostBadgeClick);
+        if (badgeObserver) badgeObserver.disconnect();
+        badgeObserver = new MutationObserver(() => {
+          if (isMutatingInternal || state.disposed) return;
+          healHostBadgeIfNeeded(shadow, state.data);
+        });
+        badgeObserver.observe(badgeBtn, {
+          attributes: true,
+          attributeFilter: ['data-quota-state'],
+          childList: true,
+          subtree: true,
+          characterData: true,
+        });
       }
 
       if (!innerObserver) {

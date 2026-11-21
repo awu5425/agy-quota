@@ -928,14 +928,21 @@ export async function hotMountViaCdp({
   migrateCapsule = false,
 }) {
   const dtFiles = discoverDevToolsPortFiles();
-  if (dtFiles.length === 0) {
-    return {
-      attempted: false,
-      reason: 'DevToolsActivePort not found (Antigravity not running)',
-      targets: 0,
-      mounted: 0,
-      mountModes: [],
-    };
+  const cdpCandidates = [];
+  for (const dtFile of dtFiles) {
+    try {
+      const lines = readFileSync(dtFile, 'utf8').trim().split(/\r?\n/);
+      const port = Number(lines[0]);
+      const browserWsPath = lines[1] || '';
+      if (Number.isFinite(port) && port > 0) {
+        cdpCandidates.push({ port, browserWsPath });
+      }
+    } catch {
+      // ignore unreadable DevToolsActivePort
+    }
+  }
+  if (!cdpCandidates.some((c) => c.port === 9222)) {
+    cdpCandidates.push({ port: 9222, browserWsPath: '' });
   }
 
   let preseedCode = '';
@@ -989,18 +996,9 @@ export async function hotMountViaCdp({
     return { mounted: false, mountMode: 'unmounted', hasMeterHost: Boolean(host && host.shadowRoot) };
   })();`;
 
-  for (const dtFile of dtFiles) {
-    let lines;
-    try {
-      lines = readFileSync(dtFile, 'utf8').trim().split(/\r?\n/);
-    } catch {
-      continue;
-    }
-    const port = Number(lines[0]);
-    const browserWsPath = lines[1] || '';
-    if (!Number.isFinite(port) || port <= 0) {
-      continue;
-    }
+  for (const cand of cdpCandidates) {
+    const port = cand.port;
+    const browserWsPath = cand.browserWsPath;
 
     // Path A: /json/list per-page WebSocket targets
     try {
