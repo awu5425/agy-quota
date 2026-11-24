@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const APP_VERSION = '1.3.4';
+  const APP_VERSION = '1.3.5';
   const DEFAULT_GITHUB_REPO = 'awu5425/agy-quota';
   const POLL_MS = 60_000;
   const COUNTDOWN_TICK_MS = 30_000;
@@ -25,7 +25,11 @@
     MODEL_PLACEHOLDER_M418: 'argon',
     MODEL_PLACEHOLDER_M419: 'argon',
     MODEL_PLACEHOLDER_M668: 'argon',
+    MODEL_PLACEHOLDER_M681: 'argon',
     MODEL_PLACEHOLDER_M427: 'gemini',
+    MODEL_PLACEHOLDER_M437: 'gemini',
+    MODEL_PLACEHOLDER_M438: 'gemini',
+    MODEL_PLACEHOLDER_M667: 'gemini',
     MODEL_PLACEHOLDER_M670: 'gemini',
     MODEL_PLACEHOLDER_M318: 'gemini',
     MODEL_PLACEHOLDER_M319: 'gemini',

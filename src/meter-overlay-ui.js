@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const OVERLAY_VERSION = '1.3.4';
+  const OVERLAY_VERSION = '1.3.5';
   const CTL_KEY = '__AGY_QUOTA_OVERLAY_CTL__';
   const SNAP_CACHE_KEY = '__AGY_QUOTA_LAST_SNAPSHOT__';
   const UPDATED_BADGE_KEY = '__AGY_QUOTA_UPDATED_BADGE__';
@@ -77,7 +77,11 @@
     MODEL_PLACEHOLDER_M418: 'argon',
     MODEL_PLACEHOLDER_M419: 'argon',
     MODEL_PLACEHOLDER_M668: 'argon',
+    MODEL_PLACEHOLDER_M681: 'argon',
     MODEL_PLACEHOLDER_M427: 'gemini',
+    MODEL_PLACEHOLDER_M437: 'gemini',
+    MODEL_PLACEHOLDER_M438: 'gemini',
+    MODEL_PLACEHOLDER_M667: 'gemini',
     MODEL_PLACEHOLDER_M670: 'gemini',
     MODEL_PLACEHOLDER_M318: 'gemini',
     MODEL_PLACEHOLDER_M319: 'gemini',
@@ -1821,10 +1825,10 @@
     if (hay.includes('neon') || /\bm(?:532|533|534|535|537)\b/i.test(rawStr)) {
       return { modelId: 'neon', label: 'Neon', poolId: 'gemini', color: '#22D3EE' };
     }
-    if (hay.includes('carbon') || /\bm(?:427|437|667|670)\b/i.test(rawStr)) {
+    if (hay.includes('carbon') || /\bm(?:427|437|438|667|670)\b/i.test(rawStr)) {
       return { modelId: 'carbon', label: 'Carbon', poolId: 'gemini', color: '#38BDF8' };
     }
-    if (hay.includes('argon') || /\bm(?:417|418|419|668)\b/i.test(rawStr)) {
+    if (hay.includes('argon') || /\bm(?:417|418|419|668|681)\b/i.test(rawStr)) {
       return {
         modelId: 'argon',
         label: 'Argon',
@@ -2687,6 +2691,14 @@
     }
     const meta = document.querySelector?.('meta[name="csrf-token"], meta[name="x-codeium-csrf-token"]');
     if (meta?.content) return meta.content.trim();
+    try {
+      const stored =
+        globalThis.localStorage?.getItem?.('agy_session_csrf_token') ||
+        globalThis.sessionStorage?.getItem?.('agy_session_csrf_token');
+      if (typeof stored === 'string' && stored.trim()) return stored.trim();
+    } catch {
+      // Ignore storage access errors in restricted frames
+    }
     return '';
   }
 

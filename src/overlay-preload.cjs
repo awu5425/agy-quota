@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * AGY Quota Top-Right & Companion Preload Bridge (overlay-preload.cjs — v1.3.4)
+ * AGY Quota Top-Right & Companion Preload Bridge (overlay-preload.cjs — v1.3.5)
  *
  * Runs inside Electron's Preload context (CommonJS) with strict fail-open
  * protection so any unexpected runtime error never blocks the host window.
@@ -35,7 +35,7 @@
     }
 
     const { contextBridge, ipcRenderer, webFrame } = electron;
-    const DEFAULT_OVERLAY_VERSION = '1.3.4';
+    const DEFAULT_OVERLAY_VERSION = '1.3.5';
     const DEFAULT_UPDATE_PREFS = Object.freeze({
       autoUpdate: true,
       lastCheckedAt: 0,
@@ -182,7 +182,7 @@
       }
       try {
         const probe = webFrame.executeJavaScript(
-          '(function(){try{return (globalThis.__APP_CONFIG__&&globalThis.__APP_CONFIG__.csrfToken)||"";}catch(_){return "";}})()',
+          '(function(){try{return (globalThis.__APP_CONFIG__&&globalThis.__APP_CONFIG__.csrfToken)||localStorage.getItem("agy_session_csrf_token")||sessionStorage.getItem("agy_session_csrf_token")||"";}catch(_){return "";}})()',
         );
         const timeout = new Promise((resolve) => setTimeout(() => resolve(''), 800));
         const token = await Promise.race([probe, timeout]);

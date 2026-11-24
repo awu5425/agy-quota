@@ -94,6 +94,7 @@ const KNOWN_MODEL_MAP = Object.freeze({
   MODEL_PLACEHOLDER_M418: 'gemini-argon',
   MODEL_PLACEHOLDER_M419: 'gemini-argon',
   MODEL_PLACEHOLDER_M668: 'gemini-argon',
+  MODEL_PLACEHOLDER_M681: 'gemini-argon',
   MODEL_PLACEHOLDER_M318: 'gemini-flash',
   MODEL_PLACEHOLDER_M319: 'gemini-flash',
   MODEL_PLACEHOLDER_M320: 'gemini-flash',
@@ -102,6 +103,10 @@ const KNOWN_MODEL_MAP = Object.freeze({
   MODEL_PLACEHOLDER_M526: 'gemini-pro',
   MODEL_PLACEHOLDER_M527: 'gemini-pro',
   MODEL_PLACEHOLDER_M528: 'gemini-pro',
+  MODEL_PLACEHOLDER_M427: 'gemini-pro',
+  MODEL_PLACEHOLDER_M437: 'gemini-pro',
+  MODEL_PLACEHOLDER_M438: 'gemini-pro',
+  MODEL_PLACEHOLDER_M667: 'gemini-pro',
   MODEL_PLACEHOLDER_M670: 'gemini-pro',
   MODEL_PLACEHOLDER_M36: 'gemini-pro',
   MODEL_PLACEHOLDER_M37: 'gemini-pro',
@@ -800,6 +805,84 @@ async function tryFetchViaCandidate(cand, timeoutMs = PROBE_TIMEOUT_MS, persistC
   }
 }
 
+function isPidAliveReadOnly(pid) {
+  const numPid = Number(pid);
+  if (!Number.isInteger(numPid) || numPid <= 0) return false;
+  try {
+    process.kill(numPid, 0);
+    return true;
+  } catch (err) {
+    return err?.code === 'EPERM';
+  }
+}
+
+function discoverDaemonHubCandidates(daemonDirOverride = null) {
+  const daemonDir = daemonDirOverride
+    ? resolve(String(daemonDirOverride))
+    : (process.env.AGY_QUOTA_DAEMON_DIR
+      ? resolve(process.env.AGY_QUOTA_DAEMON_DIR)
+      : join(homedir(), '.gemini', 'antigravity', 'daemon'));
+
+  if (!existsSync(daemonDir)) return [];
+
+  let fileEntries = [];
+  try {
+    fileEntries = readdirSync(daemonDir)
+      .filter((name) => /^hub_.*\.json$/i.test(name))
+      .map((name) => {
+        const fullPath = join(daemonDir, name);
+        let mtimeMs = 0;
+        try {
+          mtimeMs = statSync(fullPath).mtimeMs || 0;
+        } catch {
+          mtimeMs = 0;
+        }
+        return { fullPath, mtimeMs };
+      })
+      .sort((a, b) => b.mtimeMs - a.mtimeMs)
+      .slice(0, 12);
+  } catch {
+    return [];
+  }
+
+  const out = [];
+  const seen = new Set();
+  const pushCandidate = (cand) => {
+    const port = Number(cand?.port);
+    if (!Number.isFinite(port) || port <= 0) return;
+    const key = `${cand.protocol || 'auto'}:${port}:${cand.csrfToken}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ ...cand, port });
+  };
+
+  for (const entry of fileEntries) {
+    const meta = readJsonSafe(entry.fullPath);
+    if (!meta || typeof meta !== 'object') continue;
+    const csrfToken = String(meta.csrfToken || meta.csrf_token || '').trim();
+    if (!csrfToken) continue;
+
+    const pid = Number.isInteger(Number(meta.pid)) && Number(meta.pid) > 0 ? Number(meta.pid) : null;
+    if (pid !== null && !isPidAliveReadOnly(pid)) {
+      continue;
+    }
+
+    const httpsPort = toFiniteNumber(meta.httpsPort);
+    const httpPort = toFiniteNumber(meta.httpPort);
+    const genericPort = toFiniteNumber(meta.port ?? meta.lsPort);
+    if (httpsPort && httpsPort > 0) {
+      pushCandidate({ protocol: 'https', host: '127.0.0.1', port: httpsPort, csrfToken, source: 'daemon-hub', pid });
+    }
+    if (httpPort && httpPort > 0) {
+      pushCandidate({ protocol: 'http', host: '127.0.0.1', port: httpPort, csrfToken, source: 'daemon-hub', pid });
+    } else if (genericPort && genericPort > 0) {
+      pushCandidate({ protocol: null, host: '127.0.0.1', port: genericPort, csrfToken, source: 'daemon-hub', pid });
+    }
+  }
+
+  return out;
+}
+
 async function fetchViaLanguageServer(opts = {}) {
   const persistConn = !opts.readOnly && !opts.noPersist;
   const pageOrigin = opts.origin ? parseAddress(opts.origin) : null;
@@ -860,6 +943,13 @@ async function fetchViaLanguageServer(opts = {}) {
       );
       if (diskWithPageCsrf) return diskWithPageCsrf;
     }
+  }
+
+  // L2.5: Antigravity v2.34+ daemon hub_*.json discovery
+  const daemonCandidates = discoverDaemonHubCandidates(opts.daemonDir);
+  for (const cand of daemonCandidates) {
+    const hubHit = await tryFetchViaCandidate(cand, PROBE_TIMEOUT_MS, persistConn);
+    if (hubHit) return hubHit;
   }
 
   // L3: Cross-platform process / /proc discovery
@@ -975,6 +1065,7 @@ const KNOWN_TREND_EXACT_MAP = Object.freeze({
   MODEL_PLACEHOLDER_M537: 'neon',
   MODEL_PLACEHOLDER_M427: 'carbon',
   MODEL_PLACEHOLDER_M437: 'carbon',
+  MODEL_PLACEHOLDER_M438: 'carbon',
   MODEL_PLACEHOLDER_M667: 'carbon',
   MODEL_PLACEHOLDER_M670: 'carbon',
   MODEL_PLACEHOLDER_M417: 'argon',
@@ -3378,10 +3469,10 @@ async function runCliReport(argv = []) {
 }
 
 // ---------------------------------------------------------------------------
-// Self-Update & Online Hot-Upgrade Engine (v1.3.4 — Source-Pinned & Commit-Locked)
+// Self-Update & Online Hot-Upgrade Engine (v1.3.5 — Source-Pinned & Commit-Locked)
 // ---------------------------------------------------------------------------
 
-const QUOTA_CORE_VERSION = '1.3.4';
+const QUOTA_CORE_VERSION = '1.3.5';
 const DEFAULT_UPDATE_REPO = 'awu5425/agy-quota';
 const TRUSTED_GITHUB_API_BASE = 'https://api.github.com';
 const TRUSTED_GITHUB_RAW_BASE = 'https://raw.githubusercontent.com';
@@ -5383,6 +5474,7 @@ module.exports = {
   fetchQuotaBundle,
   fetchQuotaSnapshot,
   parseSnapshot,
+  discoverDaemonHubCandidates,
   detectIndependentArgonPool,
   shortenModelFamily,
   extractPoolFamilies,

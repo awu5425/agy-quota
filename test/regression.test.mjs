@@ -1582,3 +1582,246 @@ test('14. Pool-billed Google AI plans suppress legacy Exa Prompt/Flow stubs and 
     ctl.dispose();
   }
 });
+
+test('15. v2.34.0 daemon/hub_*.json discovery, agy_session_csrf_token fallback, and Carbon/Argon M437/M438/M667/M681 mapping', async (t) => {
+  const workDir = makeTempDir('daemon-hub-v135');
+  t.after(() => rmSync(workDir, { recursive: true, force: true }));
+
+  const reset5hIso = new Date(Date.now() + 3 * 3_600_000).toISOString();
+  const resetWeeklyIso = new Date(Date.now() + 6 * 86_400_000).toISOString();
+
+  const lsUserStatus = {
+    userStatus: {
+      name: 'Hub Tester',
+      email: 'hub@example.com',
+      userTier: { id: 'g1-pro-tier', name: 'Google AI Pro' },
+      cascadeModelConfigData: {
+        defaultOverrideModelConfig: { modelOrAlias: { model: 'MODEL_PLACEHOLDER_M437' } },
+        clientModelConfigs: [
+          {
+            label: 'Gemini 4 Carbon (Medium)',
+            modelOrAlias: { model: 'MODEL_PLACEHOLDER_M437' },
+            quotaInfo: { remainingFraction: 0.91, resetTime: reset5hIso },
+          },
+          {
+            label: 'Gemini 4 Carbon (Low)',
+            modelOrAlias: { model: 'MODEL_PLACEHOLDER_M438' },
+            quotaInfo: { remainingFraction: 0.91, resetTime: reset5hIso },
+          },
+          {
+            label: 'Orchestrator (Carbon)',
+            modelOrAlias: { model: 'MODEL_PLACEHOLDER_M667' },
+            quotaInfo: { remainingFraction: 0.91, resetTime: reset5hIso },
+          },
+          {
+            label: 'Orchestrator (Argon)',
+            modelOrAlias: { model: 'MODEL_PLACEHOLDER_M681' },
+            quotaInfo: { remainingFraction: 0.91, resetTime: reset5hIso },
+          },
+        ],
+      },
+    },
+  };
+
+  const lsSummary = {
+    response: {
+      groups: [
+        {
+          displayName: 'Gemini Models',
+          description:
+            'Models within this group: Gemini 4 Neon, Gemini 4 Carbon, Gemini 4 Argon, Orchestrator (Carbon), Orchestrator (Argon)',
+          buckets: [
+            { bucketId: 'gemini-5h', window: '5h', remainingFraction: 0.86, resetTime: reset5hIso },
+            { bucketId: 'gemini-weekly', window: 'weekly', remainingFraction: 0.96, resetTime: resetWeeklyIso },
+          ],
+        },
+        {
+          displayName: 'Claude and GPT models',
+          description: 'Models within this group: Claude Opus 5.5, Claude Sonnet 5.5, GPT-OSS 120B',
+          buckets: [
+            { bucketId: '3p-5h', window: '5h', remainingFraction: 1, resetTime: reset5hIso },
+            { bucketId: '3p-weekly', window: 'weekly', remainingFraction: 1, resetTime: resetWeeklyIso },
+          ],
+        },
+      ],
+    },
+  };
+
+  // 15A. daemon/hub_*.json discovery ignores dead PIDs and connects to live hub over HTTP/HTTPS
+  const server = http.createServer((req, res) => {
+    if (req.headers['x-codeium-csrf-token'] !== 'hub-test-csrf-135') {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'invalid csrf' }));
+      return;
+    }
+    if (req.url === '/exa.language_server_pb.LanguageServerService/GetUserStatus') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(lsUserStatus));
+      return;
+    }
+    if (req.url === '/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(lsSummary));
+      return;
+    }
+    res.writeHead(404);
+    res.end('not found');
+  });
+
+  await new Promise((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
+  t.after(() => server.close());
+  const serverPort = server.address().port;
+
+  const daemonDir = join(workDir, 'daemon');
+  mkdirSync(daemonDir, { recursive: true });
+  writeFileSync(
+    join(daemonDir, 'hub_dead.json'),
+    JSON.stringify({ pid: 99999999, httpPort: serverPort + 1, csrfToken: 'wrong' }),
+    'utf8',
+  );
+  writeFileSync(
+    join(daemonDir, 'hub_live.json'),
+    JSON.stringify({ pid: process.pid, httpPort: serverPort, csrfToken: 'hub-test-csrf-135' }),
+    'utf8',
+  );
+
+  const prevEnvAddr = process.env.ANTIGRAVITY_LS_ADDRESS;
+  const prevEnvCsrf = process.env.ANTIGRAVITY_CSRF_TOKEN;
+  const prevSharedDir = process.env.AGY_QUOTA_SHARED_DIR;
+  delete process.env.ANTIGRAVITY_LS_ADDRESS;
+  delete process.env.ANTIGRAVITY_CSRF_TOKEN;
+  process.env.AGY_QUOTA_SHARED_DIR = join(workDir, 'isolated-shared');
+  try {
+    const bundle = await quotaCore.fetchQuotaBundle({
+      force: true,
+      readOnly: true,
+      daemonDir,
+      disablePricingLedger: true,
+      disableModelCalls: true,
+    });
+    assert.equal(bundle.ok, true, `daemon-hub fetch failed: ${bundle.error}`);
+    assert.equal(bundle.connection.source, 'daemon-hub');
+    assert.equal(bundle.snapshot.poolMode, '2-pool');
+  } finally {
+    if (prevEnvAddr === undefined) delete process.env.ANTIGRAVITY_LS_ADDRESS;
+    else process.env.ANTIGRAVITY_LS_ADDRESS = prevEnvAddr;
+    if (prevEnvCsrf === undefined) delete process.env.ANTIGRAVITY_CSRF_TOKEN;
+    else process.env.ANTIGRAVITY_CSRF_TOKEN = prevEnvCsrf;
+    if (prevSharedDir === undefined) delete process.env.AGY_QUOTA_SHARED_DIR;
+    else process.env.AGY_QUOTA_SHARED_DIR = prevSharedDir;
+  }
+
+  // 15B. Bare M437/M438/M667/M681 classification & trend mapping
+  const now = Date.now();
+  const bareSnap = quotaCore.parseSnapshot(lsUserStatus, lsSummary, {
+    now,
+    source: 'test',
+    readOnly: true,
+    disablePricingLedger: true,
+    seedPoints: [{ ts: now - 5 * 60_000, pools: { gemini: 92, 'non-google': 100 } }],
+    modelCalls: [
+      { model: '', modelKey: '', modelExactId: 'MODEL_PLACEHOLDER_M438', inputTokens: 10_000, outputTokens: 200, costUSD: 0.02, ts: now - 30_000 },
+      { model: '', modelKey: '', modelExactId: 'MODEL_PLACEHOLDER_M667', inputTokens: 10_000, outputTokens: 200, costUSD: 0.02, ts: now - 25_000 },
+      { model: '', modelKey: '', modelExactId: 'MODEL_PLACEHOLDER_M681', inputTokens: 10_000, outputTokens: 200, costUSD: 0.02, ts: now - 20_000 },
+    ],
+  });
+  for (const bareId of ['MODEL_PLACEHOLDER_M437', 'MODEL_PLACEHOLDER_M438', 'MODEL_PLACEHOLDER_M667']) {
+    const grp = quotaCore.classifyModel(bareId, '');
+    assert.equal(grp.poolId, 'gemini', `${bareId} must map to gemini pool`);
+    assert.equal(grp.id, 'gemini-pro');
+  }
+  assert.equal(quotaCore.classifyModel('MODEL_PLACEHOLDER_M681', '').id, 'gemini-argon');
+  const carbonTrend = bareSnap.history.modelSummaries.find((s) => s.modelId === 'carbon');
+  const argonTrend = bareSnap.history.modelSummaries.find((s) => s.modelId === 'argon');
+  assert.equal(carbonTrend?.calls, 2, 'M438 + M667 must both map to carbon trend');
+  assert.equal(argonTrend?.calls, 1, 'M681 must map to argon trend');
+
+  // 15C. Overlay UI agy_session_csrf_token fallback + bare M438/M667 active pool highlight
+  const uiCode = readFileSync(join(REPO_ROOT, 'src', 'meter-overlay-ui.js'), 'utf8');
+  const noop = () => {};
+  const makeStubEl = () => ({
+    style: {},
+    classList: { toggle: noop, add: noop, remove: noop, contains: () => false },
+    setAttribute: noop,
+    getAttribute: () => '',
+    addEventListener: noop,
+    removeEventListener: noop,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+  });
+  const docEl = makeStubEl();
+  const bodyEl = makeStubEl();
+  const storage = new Map([['agy_session_csrf_token', 'ls-session-csrf-99']]);
+  let nextTimerId = 1;
+  const seenCsrfHeaders = [];
+  let fetchResolveNotify = null;
+  const fetchCalled = new Promise((r) => {
+    fetchResolveNotify = r;
+  });
+
+  const uiCtx = vm.createContext({
+    __APP_CONFIG__: { csrfToken: '' },
+    document: {
+      documentElement: docEl,
+      body: bodyEl,
+      hidden: false,
+      readyState: 'complete',
+      getElementById: () => null,
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      addEventListener: noop,
+      removeEventListener: noop,
+    },
+    window: {
+      addEventListener: noop,
+      removeEventListener: noop,
+      matchMedia: () => ({ matches: true, addEventListener: noop, removeEventListener: noop }),
+    },
+    location: { origin: 'https://127.0.0.1:59999', protocol: 'https:' },
+    navigator: { language: 'zh-CN' },
+    localStorage: {
+      getItem: (k) => (storage.has(k) ? storage.get(k) : null),
+      setItem: (k, v) => storage.set(k, String(v)),
+      removeItem: (k) => storage.delete(k),
+    },
+    MutationObserver: class {
+      observe() {}
+      disconnect() {}
+    },
+    fetch: async (url, init = {}) => {
+      const hdr = init?.headers?.['x-codeium-csrf-token'] || '';
+      seenCsrfHeaders.push(hdr);
+      if (fetchResolveNotify) fetchResolveNotify();
+      if (String(url).includes('GetUserStatus')) {
+        return { ok: true, status: 200, json: async () => lsUserStatus };
+      }
+      if (String(url).includes('RetrieveUserQuotaSummary')) {
+        return { ok: true, status: 200, json: async () => lsSummary };
+      }
+      return { ok: false, status: 404, json: async () => ({}) };
+    },
+    queueMicrotask,
+    setTimeout: () => nextTimerId++,
+    clearTimeout: noop,
+    setInterval: () => nextTimerId++,
+    clearInterval: noop,
+    URL,
+    Promise,
+  });
+  uiCtx.globalThis = uiCtx;
+  uiCtx.window.top = uiCtx.window;
+
+  vm.runInContext(uiCode, uiCtx, { filename: 'src/meter-overlay-ui.js' });
+  const ctl = uiCtx.__AGY_QUOTA_OVERLAY_CTL__;
+  t.after(() => ctl?.dispose?.());
+  await Promise.race([fetchCalled, new Promise((r) => setTimeout(r, 1000))]);
+  await ctl.refresh();
+  assert.ok(
+    seenCsrfHeaders.includes('ls-session-csrf-99'),
+    `expected fetch to receive agy_session_csrf_token fallback, got: ${JSON.stringify(seenCsrfHeaders)}`,
+  );
+  ctl.setSnapshotForTest(bareSnap);
+  assert.equal(ctl.setActiveModelForTest('MODEL_PLACEHOLDER_M438'), 'gemini');
+  assert.equal(ctl.setActiveModelForTest('MODEL_PLACEHOLDER_M667'), 'gemini');
+  ctl.dispose();
+});

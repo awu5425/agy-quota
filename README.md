@@ -1,10 +1,10 @@
-# AGY Quota (`agy-quota` v1.3.4)
+# AGY Quota (`agy-quota` v1.3.5)
 
 English | [简体中文](./README.zh-CN.md)
 
 A 100% original, zero-dependency **Antigravity 2.x** account quota suite & **Agent Skill (`/agy-quota`)** powered by one shared engine (`src/quota-core.cjs`) and unified local history & settings store (`~/.gemini/antigravity/agy-quota`).
 
-`agy-quota` v1.3.4 gives you **full freedom of UI choice on desktop**, **native Agent Skill (`/agy-quota`) integration**, plus headless CLI & web tools:
+`agy-quota` v1.3.5 gives you **full freedom of UI choice on desktop**, **native Agent Skill (`/agy-quota`) integration**, plus headless CLI & web tools:
 
 1. **Top-Right Semi-Ring Overlay (`--top-right` / `--meter-overlay`)** — Dual-mode adaptive top-right quota board with CDP zero-restart hot-mounting:
    - **Standalone Top-Right HUD Mode (Zero Prerequisites)**: Works out of the box on a clean Antigravity installation **without** `antigravity-context-viewer` — mounts a compact circular SVG progress badge (`#agy-quota-standalone-hud`, safely clearing Windows window controls) that opens the `476px` 4-layer adaptive `1×2` / `1×3` semi-ring popover.

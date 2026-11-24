@@ -1,10 +1,10 @@
-# AGY Quota (`agy-quota` v1.3.4)
+# AGY Quota (`agy-quota` v1.3.5)
 
 [English](./README.md) | 简体中文
 
 一个 **100% 原创、零运行时第三方依赖** 的 **Antigravity 2.x** 账号配额监控套件与 **Agent Skill（`/agy-quota`）**。底层共用单一核心引擎（`src/quota-core.cjs`）与统一缓存/配置目录（`~/.gemini/antigravity/agy-quota`）。
 
-`agy-quota` v1.3.4 在桌面端提供 **两种自由可选（亦可共存）的 UI 形态**、**原生 `/agy-quota` 对话技能（Skill）**，并完整覆盖终端 CLI 与远程网页场景：
+`agy-quota` v1.3.5 在桌面端提供 **两种自由可选（亦可共存）的 UI 形态**、**原生 `/agy-quota` 对话技能（Skill）**，并完整覆盖终端 CLI 与远程网页场景：
 
 1. **右上角半环看板（`--top-right` / `--meter-overlay`，桌面端首选）** —— 支持 CDP 免重启即时热挂载，**双模自适应切换**：
    - **独立右上角模式（零前置依赖）**：在**未安装** `antigravity-context-viewer` 的干净客户端上开箱即用，自动在窗口右上角（智能避让最小化/最大化/关闭三键）挂载精致的 SVG 进度环胶囊按钮（`#agy-quota-standalone-hud`），点击弹出 `476px` 四层 `1×2 / 1×3` 自适应半环看板。

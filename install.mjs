@@ -57,9 +57,9 @@ export const SKILL_RUNTIME_ENTRIES = CANONICAL_BUNDLE_FILES;
 function readRepoVersion(sourceRoot = REPO_ROOT) {
   try {
     const pkg = JSON.parse(readFileSync(join(sourceRoot, 'package.json'), 'utf8'));
-    return pkg.version || '1.3.4';
+    return pkg.version || '1.3.5';
   } catch {
-    return '1.3.4';
+    return '1.3.5';
   }
 }
 
